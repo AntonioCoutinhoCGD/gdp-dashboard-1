@@ -1,5 +1,5 @@
 # cambial_dashboard_anual.py
-# Dashboard Streamlit (corporativo) — Posição (Dia/Mês/Ano) + YoY (média anos anteriores) + Forecast (toggle) + Tema Light/Dark
+# Dashboard Streamlit (corporativo) — Posição (Dia/Mês/Ano) + YoY (média anos anteriores) + Forecast (lado-a-lado) + Tema Light/Dark
 # Como correr:
 #   pip install streamlit pandas numpy altair
 #   streamlit run cambial_dashboard_anual.py
@@ -8,6 +8,8 @@ import io
 import calendar
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
+from functools import lru_cache
+import urllib.request
 
 import numpy as np
 import pandas as pd
@@ -16,26 +18,43 @@ import altair as alt
 
 
 # =============================================================================
-# LOGO (preencher)
+# LOGO (CGD)
 # =============================================================================
-# Pode ser URL (para st.image) ou caminho local (recomendado para page_icon).
-LOGO_URL = ""  # <-- preencher
+LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/Logo_of_Caixa_Geral_de_Dep%C3%B3sitos.svg/250px-Logo_of_Caixa_Geral_de_Dep%C3%B3sitos.svg.png"
+
+
+@lru_cache(maxsize=2)
+def _download_logo_to_local(url: str) -> Optional[str]:
+    """Faz download do logotipo (URL) e grava localmente para usar como page_icon."""
+    if not url:
+        return None
+    try:
+        data = urllib.request.urlopen(url, timeout=10).read()
+        p = Path(__file__).with_name("_cgd_logo.png")
+        # grava sempre (evita ficar preso em cache/ficheiro antigo)
+        p.write_bytes(data)
+        return str(p)
+    except Exception:
+        return None
+
+
+LOGO_LOCAL = _download_logo_to_local(LOGO_URL)
 
 
 # =============================================================================
 # Página (tab / title)
 # =============================================================================
-# page_icon: Streamlit aceita emoji ou caminho local; algumas versões aceitam URL.
+# page_icon: Streamlit aceita emoji ou caminho local; URL nem sempre funciona.
 try:
     st.set_page_config(
         page_title="Plataforma Cambial — Executive",
-        page_icon=LOGO_URL if LOGO_URL else "📊",
+        page_icon=LOGO_LOCAL if LOGO_LOCAL else "🏦",
         layout="wide",
     )
 except Exception:
     st.set_page_config(
         page_title="Plataforma Cambial — Executive",
-        page_icon="📊",
+        page_icon="🏦",
         layout="wide",
     )
 
@@ -86,6 +105,47 @@ def _pick_col(cols: List[str], must_contain: List[str], occurrence: int = 0) -> 
         if ok:
             hits.append(c)
     return hits[occurrence] if len(hits) > occurrence else None
+
+
+def _best_ops_col(cols: List[str]) -> Optional[str]:
+    """Tenta apanhar a coluna de Nº operações (a que varia por dia), evitando colunas de 'clientes ativados c/ operações'."""
+    best = None
+    best_score = -10_000
+    for c in cols:
+        nc = _norm_text(c)
+        if "operac" not in nc:
+            continue
+        score = 0
+
+        # boosts para "n" / "num" / "numero"
+        if " num" in f" {nc} " or nc.startswith("num ") or "numero" in nc:
+            score += 6
+        if nc.startswith("n ") or " n " in f" {nc} ":
+            score += 4
+        if "n operac" in nc or "num operac" in nc or "numero operac" in nc:
+            score += 8
+
+        # penalizações para evitar colunas erradas
+        if "clientes" in nc:
+            score -= 8
+        if "ativad" in nc:
+            score -= 10
+        if "acesso" in nc:
+            score -= 6
+        if "%" in c or "percent" in nc:
+            score -= 10
+        if "cl " in f" {nc} ":
+            score -= 2
+
+        # pequeno boost se for curto (títulos curtos tendem a ser a métrica direta)
+        if len(nc) <= 18:
+            score += 2
+
+        if score > best_score:
+            best_score = score
+            best = c
+
+    return best
 
 
 def _parse_number_str(x: str) -> Optional[float]:
@@ -273,7 +333,8 @@ def load_report(raw: bytes) -> pd.DataFrame:
     col_ativ2 = _pick_col(cols, ["clientes", "ativados", "operac"], 1)
     col_pct2 = _pick_col(cols, ["cl", "operac", "acesso"], 1)
 
-    col_ops = _pick_col(cols, ["operacoes"], 0)
+    # IMPORTANTÍSSIMO: apanhar a coluna certa de Nº operações
+    col_ops = _best_ops_col(cols) or _pick_col(cols, ["n", "operac"], 0) or _pick_col(cols, ["operacoes"], 0)
     col_vol = _pick_col(cols, ["volume"], 0)
     col_marg = _pick_col(cols, ["margem"], 0)
 
@@ -338,6 +399,8 @@ def _apply_theme(theme: str):
         df_bg = "#0B1220"
         df_text = "rgba(255,255,255,0.92)"
         df_header = "rgba(255,255,255,0.08)"
+        orange = "#F59E0B"
+        widget_shadow = "rgba(0,0,0,0.35)"
     else:
         bg = "#F6F7FB"
         panel = "#FFFFFF"
@@ -354,6 +417,8 @@ def _apply_theme(theme: str):
         df_bg = "#FFFFFF"
         df_text = "rgba(17,24,39,0.95)"
         df_header = "rgba(17,24,39,0.06)"
+        orange = "#F59E0B"
+        widget_shadow = "rgba(17,24,39,0.10)"
 
     css = f"""
     <style>
@@ -369,13 +434,28 @@ def _apply_theme(theme: str):
         --c-good: {good};
         --c-warn: {warn};
         --c-bad: {bad};
+        --c-orange: {orange};
+        --c-shadow: {widget_shadow};
       }}
 
       .stApp {{ background: var(--c-bg) !important; color: var(--c-text) !important; }}
       html, body, [class*="css"]  {{ color: var(--c-text) !important; }}
-      .block-container {{ padding-top: 0.9rem; padding-bottom: 2.0rem; max-width: 1500px; }}
+      .block-container {{ padding-top: 4.5rem; padding-bottom: 2.0rem; max-width: 1500px; }}
       footer, #MainMenu {{ visibility: hidden; }}
+        [data-testid="stHeader"] {{
+        background: var(--c-bg) !important;
+        height: 0px !important;
+        }}
+        [data-testid="stHeader"] * {{
+        display: none !important;
+        }}
+        [data-testid="stToolbar"] {{
+        visibility: hidden !important;
+        height: 0px !important;
+        }}
 
+        background: var(--c-bg) !important
+        height: 0px !important;
       h1, h2, h3, h4, h5, h6 {{ letter-spacing: -0.2px; color: var(--c-text) !important; }}
       .subtle {{ color: var(--c-subtle) !important; }}
 
@@ -384,11 +464,12 @@ def _apply_theme(theme: str):
         border: 1px solid var(--c-border);
         border-radius: 16px;
         padding: 14px 16px;
+        box-shadow: 0 6px 18px var(--c-shadow);
       }}
 
       .kpi-grid {{
         display: grid;
-        grid-template-columns: repeat(6, 1fr);
+        grid-template-columns: repeat(5, 1fr);
         gap: 10px;
       }}
       @media (max-width: 1300px) {{ .kpi-grid {{ grid-template-columns: repeat(3, 1fr); }} }}
@@ -404,10 +485,10 @@ def _apply_theme(theme: str):
       .kpi-title {{ font-size: 0.78rem; color: var(--c-subtle); margin-bottom: 4px; }}
       .kpi-value {{ font-size: 1.25rem; font-weight: 760; line-height: 1.15; color: var(--c-text); }}
       .kpi-note  {{ font-size: 0.75rem; color: var(--c-subtle); margin-top: 4px; }}
-      .delta-up {{ color: var(--c-good); font-weight: 700; }}
-      .delta-down {{ color: var(--c-bad); font-weight: 700; }}
-      .delta-flat {{ color: var(--c-subtle); font-weight: 700; }}
-      .forecast {{ color: var(--c-accent2); }}
+      .kpi-fc {{ font-size: 0.82rem; color: var(--c-subtle); font-weight: 720; margin-left: 10px; white-space: nowrap; }}
+      .delta-up {{ color: var(--c-good); font-weight: 800; }}
+      .delta-down {{ color: var(--c-bad); font-weight: 800; }}
+      .delta-flat {{ color: var(--c-subtle); font-weight: 800; }}
 
       .badge {{
         display: inline-block;
@@ -419,7 +500,85 @@ def _apply_theme(theme: str):
         margin-left: 8px;
       }}
 
-      /* DataFrame container arredondado + força cores (evita preto no dark) */
+      /* === Widgets (radio/select/date/file uploader/popover) — corrige visibilidade no Light === */
+      /* Radio */
+      div[data-testid="stRadio"] label, div[data-testid="stRadio"] span {{ color: var(--c-text) !important; }}
+      div[data-baseweb="radio"] * {{ color: var(--c-text) !important; }}
+      /* Radio — força texto "Dia / Mês / Ano" a usar a cor do tema (especialmente no Light) */
+div[data-testid="stRadio"] label *,
+div[data-testid="stRadio"] div[role="radiogroup"] label *,
+div[data-testid="stRadio"] div[role="radiogroup"] label p,
+div[data-testid="stRadio"] div[role="radiogroup"] label span,
+div[data-testid="stRadio"] div[role="radiogroup"] label div {{
+  color: var(--c-text) !important;
+  opacity: 1 !important;
+}}
+
+/* BaseWeb radio (varia por versão do Streamlit) */
+div[data-baseweb="radio"] label *,
+div[data-baseweb="radio"] label p,
+div[data-baseweb="radio"] label span,
+div[data-baseweb="radio"] label div {{
+  color: var(--c-text) !important;
+  opacity: 1 !important;
+}}
+
+      div[data-baseweb="radio"] svg {{ fill: var(--c-text) !important; color: var(--c-text) !important; }}
+      div[data-baseweb="radio"] div[role="radio"] {{ border-color: var(--c-border) !important; background: var(--c-card) !important; }}
+      div[data-baseweb="radio"] div[role="radio"] > div {{ border-color: var(--c-border) !important; }}
+
+      /* Select */
+      div[data-testid="stSelectbox"] * {{ color: var(--c-text) !important; }}
+      div[data-baseweb="select"] > div {{
+        background: var(--c-card) !important;
+        border: 1px solid var(--c-border) !important;
+        border-radius: 12px !important;
+      }}
+      div[data-baseweb="select"] span {{ color: var(--c-text) !important; }}
+
+      /* Date input + calendar popover */
+      div[data-testid="stDateInput"] > div {{
+        background: var(--c-card) !important;
+        border-radius: 12px !important;
+      }}
+      div[data-testid="stDateInput"] input {{
+        color: var(--c-text) !important;
+        background: var(--c-card) !important;
+        border: 1px solid var(--c-border) !important;
+        border-radius: 12px !important;
+      }}
+      div[data-testid="stDateInput"] svg {{ fill: var(--c-subtle) !important; }}
+      div[data-baseweb="calendar"] * {{ color: var(--c-text) !important; }}
+      div[data-baseweb="calendar"] {{ background: var(--c-card) !important; }}
+
+      /* Toggle/Number input */
+      div[data-testid="stNumberInput"] input {{
+        color: var(--c-text) !important;
+        background: var(--c-card) !important;
+        border: 1px solid var(--c-border) !important;
+        border-radius: 12px !important;
+      }}
+
+      /* Popover (settings) */
+      div[data-testid="stPopoverBody"] {{
+        background: var(--c-card) !important;
+        color: var(--c-text) !important;
+        border: 1px solid var(--c-border) !important;
+        border-radius: 16px !important;
+        box-shadow: 0 10px 28px var(--c-shadow) !important;
+      }}
+      div[data-testid="stPopoverBody"] * {{ color: var(--c-text) !important; }}
+
+      /* File uploader (upload CSV) */
+      div[data-testid="stFileUploader"] > div {{
+        background: var(--c-card) !important;
+        border: 1px dashed var(--c-border) !important;
+        border-radius: 16px !important;
+        padding: 8px !important;
+      }}
+      div[data-testid="stFileUploader"] * {{ color: var(--c-text) !important; }}
+
+      /* DataFrame container arredondado + força cores */
       div[data-testid="stDataFrame"] {{
         border-radius: 16px;
         border: 1px solid var(--c-border);
@@ -427,12 +586,8 @@ def _apply_theme(theme: str):
         background: {df_bg} !important;
         color: {df_text} !important;
       }}
-      div[data-testid="stDataFrame"] * {{
-        color: {df_text} !important;
-      }}
-      div[data-testid="stDataFrame"] thead tr th {{
-        background: {df_header} !important;
-      }}
+      div[data-testid="stDataFrame"] * {{ color: {df_text} !important; }}
+      div[data-testid="stDataFrame"] thead tr th {{ background: {df_header} !important; }}
 
       /* Botões discretos */
       .stDownloadButton button, .stButton button {{ border-radius: 12px; }}
@@ -455,7 +610,7 @@ def _apply_theme(theme: str):
         color: var(--c-subtle);
       }}
 
-      /* Pequeno painel de controlos */
+      /* Painel de controlos */
       .ctrl {{
         background: var(--c-panel);
         border: 1px solid var(--c-border);
@@ -463,8 +618,58 @@ def _apply_theme(theme: str):
         padding: 12px 12px;
       }}
 
+      /* === Tabela mensal (HTML) === */
+      .tbl-wrap {{ overflow-x: auto; }}
+      table.tbl {{ width: 100%; border-collapse: separate; border-spacing: 0; }}
+      table.tbl thead th {{
+        text-align: left;
+        font-size: 0.78rem;
+        color: var(--c-subtle);
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--c-border);
+        position: sticky;
+        top: 0;
+        background: var(--c-panel);
+        z-index: 1;
+      }}
+      table.tbl tbody td {{
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(0,0,0,0);
+        vertical-align: middle;
+        white-space: nowrap;
+        color: var(--c-text);
+        font-size: 0.92rem;
+      }}
+      table.tbl tbody tr {{
+        background: var(--c-card);
+        border-radius: 14px;
+      }}
+      table.tbl tbody tr:nth-child(odd) td {{ background: rgba(0,0,0,0.00); }}
+      table.tbl tbody tr:hover td {{ background: rgba(96,165,250,0.08); }}
+
+      .arrow {{ font-weight: 900; margin-left: 8px; }}
+      .arrow.up {{ color: var(--c-good); }}
+      .arrow.down {{ color: var(--c-bad); }}
+      .arrow.flat {{ color: var(--c-subtle); }}
+
+      .pctcell {{ min-width: 260px; }}
+      .bar {{
+        height: 10px;
+        width: 170px;
+        background: rgba(0,0,0,0.06);
+        border: 1px solid var(--c-border);
+        border-radius: 999px;
+        overflow: hidden;
+        display: inline-block;
+        vertical-align: middle;
+        margin-right: 10px;
+      }}
+      .fill {{ height: 100%; background: var(--c-orange); border-radius: 999px; }}
+      .pcttxt {{ color: var(--c-subtle); font-size: 0.82rem; vertical-align: middle; display: inline-block; }}
+
     </style>
     """
+
     st.markdown(css, unsafe_allow_html=True)
 
     def altair_theme():
@@ -508,6 +713,7 @@ def _apply_theme(theme: str):
         "good": good,
         "warn": warn,
         "bad": bad,
+        "orange": orange,
     }
 
 
@@ -663,10 +869,11 @@ def _forecast_year_end(df_daily: pd.DataFrame, year: int, asof: pd.Timestamp) ->
         df_m = build_monthly_year(df_daily, y)
         if df_m.empty:
             continue
-        # considerar "ano completo" se tiver dados em Dez
-        has_dec = pd.to_numeric(df_m.loc[df_m["mes_num"] == 12, "volume_negocios"], errors="coerce").notna().any() or \
-                  pd.to_numeric(df_m.loc[df_m["mes_num"] == 12, "margem_liquida"], errors="coerce").notna().any() or \
-                  pd.to_numeric(df_m.loc[df_m["mes_num"] == 12, "num_operacoes"], errors="coerce").notna().any()
+        has_dec = (
+            pd.to_numeric(df_m.loc[df_m["mes_num"] == 12, "volume_negocios"], errors="coerce").notna().any()
+            or pd.to_numeric(df_m.loc[df_m["mes_num"] == 12, "margem_liquida"], errors="coerce").notna().any()
+            or pd.to_numeric(df_m.loc[df_m["mes_num"] == 12, "num_operacoes"], errors="coerce").notna().any()
+        )
         if not has_dec:
             continue
         past_full.append((y, df_m))
@@ -811,35 +1018,6 @@ def _baseline_ytd(df_daily: pd.DataFrame, sel_year: int, asof: pd.Timestamp, yea
     return _avg_dict(dicts), used
 
 
-def _baseline_full_month(df_daily: pd.DataFrame, sel_year: int, sel_month: int, years_all: List[int]) -> Tuple[Dict[str, float], List[int]]:
-    prev_years = [y for y in years_all if y < sel_year]
-    dicts = []
-    used = []
-    for y in prev_years[-5:]:
-        m_start, m_end = _month_bounds(y, sel_month)
-        df = _period_slice(df_daily, m_start, m_end)
-        k = _period_kpis_from_daily(df)
-        if any([not np.isnan(k.get(x, np.nan)) for x in ("vol", "mar", "ops")]):
-            dicts.append(k)
-            used.append(y)
-    return _avg_dict(dicts), used
-
-
-def _baseline_full_year(df_daily: pd.DataFrame, sel_year: int, years_all: List[int]) -> Tuple[Dict[str, float], List[int]]:
-    prev_years = [y for y in years_all if y < sel_year]
-    dicts = []
-    used = []
-    for y in prev_years[-5:]:
-        y_start = pd.Timestamp(year=y, month=1, day=1)
-        y_end = pd.Timestamp(year=y, month=12, day=31)
-        df = _period_slice(df_daily, y_start, y_end)
-        k = _period_kpis_from_daily(df)
-        if any([not np.isnan(k.get(x, np.nan)) for x in ("vol", "mar", "ops")]):
-            dicts.append(k)
-            used.append(y)
-    return _avg_dict(dicts), used
-
-
 def _delta_html_pct(p):
     if p is None or (isinstance(p, float) and np.isnan(p)):
         return ""
@@ -874,88 +1052,77 @@ def _delta_html_pp(pp):
 # Charts (Altair)
 # =============================================================================
 
-def _chart_monthly_bar(df_month: pd.DataFrame, value_col: str, title: str, y_title: str, color: str) -> alt.Chart:
-    if df_month is None or df_month.empty or value_col not in df_month.columns:
-        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_bar().encode(x="x", y="y").properties(height=240)
+def _chart_yoy_line(
+    df_a: pd.DataFrame,
+    year_a: int,
+    df_b: Optional[pd.DataFrame],
+    year_b: Optional[int],
+    value_col: str,
+    title: str,
+    y_title: str,
+    color_a: str,
+    color_b: str,
+    is_pct: bool = False,
+) -> alt.Chart:
+    if df_a is None or df_a.empty or value_col not in df_a.columns:
+        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line().encode(x="x", y="y").properties(height=240)
 
-    d = df_month[["mes_num", "mes", value_col]].copy()
-    d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
-    d = d[d[value_col].notna()]
+    frames = []
+    d1 = df_a[["mes_num", "mes", value_col]].copy()
+    d1[value_col] = pd.to_numeric(d1[value_col], errors="coerce")
+    d1 = d1[d1[value_col].notna()].copy()
+    d1["Ano"] = str(year_a)
+    frames.append(d1)
+
+    if df_b is not None and (not df_b.empty) and value_col in df_b.columns and year_b is not None:
+        d2 = df_b[["mes_num", "mes", value_col]].copy()
+        d2[value_col] = pd.to_numeric(d2[value_col], errors="coerce")
+        d2 = d2[d2[value_col].notna()].copy()
+        d2["Ano"] = str(year_b)
+        frames.append(d2)
+
+    d = pd.concat(frames, ignore_index=True)
     if d.empty:
-        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_bar().encode(x="x", y="y").properties(height=240)
+        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line().encode(x="x", y="y").properties(height=240)
 
-    ch = alt.Chart(d).mark_bar(cornerRadiusTopLeft=5, cornerRadiusTopRight=5, color=color).encode(
-        x=alt.X("mes:N", sort=alt.SortField(field="mes_num", order="ascending"), title=None),
-        y=alt.Y(f"{value_col}:Q", title=y_title, axis=alt.Axis(grid=True)),
-        tooltip=[
-            alt.Tooltip("mes:N", title="Mês"),
-            alt.Tooltip(f"{value_col}:Q", title=title, format=",.0f"),
-        ],
-    ).properties(height=240)
+    if year_b is not None and df_b is not None and not df_b.empty:
+        dom = [str(year_b), str(year_a)]
+        rng = [color_b, color_a]
+    else:
+        dom = [str(year_a)]
+        rng = [color_a]
+
+    y_enc = alt.Y(f"{value_col}:Q", title=y_title, axis=alt.Axis(grid=True))
+    if is_pct:
+        y_enc = alt.Y(
+            f"{value_col}:Q",
+            title=y_title,
+            axis=alt.Axis(grid=True, format="%"),
+            scale=alt.Scale(domain=[0, 1]),
+        )
+
+    fmt = ".1%" if is_pct else ",.0f"
+
+    ch = (
+        alt.Chart(d)
+        .mark_line(point=alt.OverlayMarkDef(size=70), interpolate="monotone")
+        .encode(
+            x=alt.X("mes:N", sort=alt.SortField(field="mes_num", order="ascending"), title=None),
+            y=y_enc,
+            color=alt.Color(
+                "Ano:N",
+                scale=alt.Scale(domain=dom, range=rng),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip("Ano:N", title="Ano"),
+                alt.Tooltip("mes:N", title="Mês"),
+                alt.Tooltip(f"{value_col}:Q", title=title, format=fmt),
+            ],
+        )
+        .properties(height=240)
+    )
     return ch
-
-
-def _chart_monthly_area_line(df_month: pd.DataFrame, value_col: str, title: str, y_title: str, color: str) -> alt.Chart:
-    if df_month is None or df_month.empty or value_col not in df_month.columns:
-        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line().encode(x="x", y="y").properties(height=240)
-
-    d = df_month[["mes_num", "mes", value_col]].copy()
-    d[value_col] = pd.to_numeric(d[value_col], errors="coerce")
-    d = d[d[value_col].notna()]
-    if d.empty:
-        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line().encode(x="x", y="y").properties(height=240)
-
-    area = alt.Chart(d).mark_area(opacity=0.18, interpolate="monotone", color=color).encode(
-        x=alt.X("mes:N", sort=alt.SortField(field="mes_num", order="ascending"), title=None),
-        y=alt.Y(f"{value_col}:Q", title=y_title, axis=alt.Axis(grid=True)),
-    )
-
-    line = alt.Chart(d).mark_line(point=alt.OverlayMarkDef(size=70), interpolate="monotone", color=color).encode(
-        x=alt.X("mes:N", sort=alt.SortField(field="mes_num", order="ascending"), title=None),
-        y=alt.Y(f"{value_col}:Q", title=y_title),
-        tooltip=[
-            alt.Tooltip("mes:N", title="Mês"),
-            alt.Tooltip(f"{value_col}:Q", title=title, format=",.0f"),
-        ],
-    )
-
-    return (area + line).properties(height=240)
-
-
-def _chart_adoption(df_month: pd.DataFrame, accent: str, accent2: str) -> alt.Chart:
-    if df_month is None or df_month.empty:
-        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line().encode(x="x", y="y").properties(height=240)
-
-    keep_cols = [c for c in ["mes_num", "mes", "clientes_acesso", "ativados_ops_s2", "conv_ops_s2"] if c in df_month.columns]
-    d = df_month[keep_cols].copy()
-    for c in ["clientes_acesso", "ativados_ops_s2", "conv_ops_s2"]:
-        if c in d.columns:
-            d[c] = pd.to_numeric(d[c], errors="coerce")
-
-    d = d[(d.get("clientes_acesso").notna()) | (d.get("ativados_ops_s2").notna()) | (d.get("conv_ops_s2").notna())]
-    if d.empty:
-        return alt.Chart(pd.DataFrame({"x": [], "y": []})).mark_line().encode(x="x", y="y").properties(height=240)
-
-    base = alt.Chart(d).encode(
-        x=alt.X("mes:N", sort=alt.SortField(field="mes_num", order="ascending"), title=None)
-    )
-
-    c1 = base.mark_line(point=True, interpolate="monotone", color=accent2).encode(
-        y=alt.Y("clientes_acesso:Q", title="Clientes / Ativados", axis=alt.Axis(grid=True)),
-        tooltip=[alt.Tooltip("mes:N", title="Mês"), alt.Tooltip("clientes_acesso:Q", title="Clientes c/ acesso", format=",.0f")]
-    )
-
-    c2 = base.mark_line(point=True, interpolate="monotone", color=accent).encode(
-        y=alt.Y("ativados_ops_s2:Q", title=None),
-        tooltip=[alt.Tooltip("mes:N", title="Mês"), alt.Tooltip("ativados_ops_s2:Q", title="Ativados c/ operações", format=",.0f")]
-    )
-
-    c3 = base.mark_line(point=True, interpolate="monotone", strokeDash=[6, 4], color="#22C55E").encode(
-        y=alt.Y("conv_ops_s2:Q", title="% clientes com operações", axis=alt.Axis(grid=False, orient="right", format="%"), scale=alt.Scale(domain=[0, 1])),
-        tooltip=[alt.Tooltip("mes:N", title="Mês"), alt.Tooltip("conv_ops_s2:Q", title="% operações/acesso", format=".1%")]
-    )
-
-    return alt.layer(c1, c2, c3).resolve_scale(y="independent").properties(height=260)
 
 
 # =============================================================================
@@ -975,52 +1142,19 @@ def _kpi_grid(items: List[Tuple[str, str, str]]):
               <div class="kpi-note">{note}</div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-# =============================================================================
-# Carregamento de dados
-# =============================================================================
-
-with st.expander("Carregar dados", expanded=True):
-    cc1, cc2 = st.columns([2, 1])
-    with cc1:
-        upl = st.file_uploader("CSV do Report", type=["csv"], label_visibility="collapsed")
-    with cc2:
-        fallback_path = Path(__file__).with_name("Report.csv")
-        use_fallback = False
-        if upl is None and fallback_path.exists():
-            use_fallback = st.checkbox("Usar Report.csv local", value=True)
-
-raw = None
-if upl is not None:
-    raw = upl.read()
-elif use_fallback:
-    raw = fallback_path.read_bytes()
-
-if raw is None:
-    st.info("Carregue o CSV para ver o dashboard.")
-    st.stop()
-
-try:
-    df_daily = load_report(raw)
-except Exception as e:
-    st.error(f"Erro ao ler o CSV: {e}")
-    st.stop()
-
-if df_daily.empty:
-    st.warning("CSV sem dados válidos.")
-    st.stop()
-
-# Defaults baseados no ficheiro
-last_date = df_daily["data"].max().normalize()
-years_all = sorted(df_daily["data"].dt.year.dropna().unique().tolist())
-last_year = int(last_date.year)
-last_month = int(last_date.month)
+def _with_forecast(real_str: str, fc_str: str, enabled: bool) -> str:
+    if not enabled:
+        return real_str
+    if fc_str is None or fc_str == "—":
+        return real_str
+    return f"{real_str}<span class='kpi-fc'>F: {fc_str}</span>"
 
 
 # =============================================================================
@@ -1032,32 +1166,38 @@ if "theme" not in st.session_state:
 if "pos_scope" not in st.session_state:
     st.session_state.pos_scope = "Dia"
 if "sel_year" not in st.session_state:
-    st.session_state.sel_year = last_year
+    st.session_state.sel_year = None
 if "sel_month" not in st.session_state:
-    st.session_state.sel_month = last_month
+    st.session_state.sel_month = None
 if "asof_date" not in st.session_state:
-    st.session_state.asof_date = last_date
+    st.session_state.asof_date = None
 if "show_forecast" not in st.session_state:
     st.session_state.show_forecast = False
 if "show_month_table" not in st.session_state:
     st.session_state.show_month_table = True
-if "show_daily_detail" not in st.session_state:
-    st.session_state.show_daily_detail = False
+if "raw_report_bytes" not in st.session_state:
+    st.session_state.raw_report_bytes = None
+
+# detalhe diário sempre ligado
+st.session_state.show_daily_detail = True
 
 _theme_vars = _apply_theme(st.session_state.theme)
 
 
 # =============================================================================
-# Topo: logo + título
+# Topo: logo + título + settings
 # =============================================================================
 
 c_logo, c_title, c_set = st.columns([0.12, 2.55, 0.55])
 with c_logo:
-    if LOGO_URL:
-        try:
-            st.image(LOGO_URL, width=72)
-        except Exception:
-            pass
+    try:
+        st.image(LOGO_URL, width=82)
+    except Exception:
+        if LOGO_LOCAL:
+            try:
+                st.image(LOGO_LOCAL, width=82)
+            except Exception:
+                pass
 with c_title:
     st.markdown(
         """
@@ -1068,461 +1208,650 @@ with c_title:
           </div>
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 with c_set:
     with st.popover("⚙️", use_container_width=True):
         st.session_state.theme = st.selectbox("Tema", ["Light", "Dark"], index=1 if st.session_state.theme == "Dark" else 0)
         st.session_state.show_month_table = st.toggle("Mostrar resumo mensal", value=st.session_state.show_month_table)
-        st.session_state.show_daily_detail = st.toggle("Mostrar detalhe diário (secundário)", value=st.session_state.show_daily_detail)
 
-# reaplica se mudou
+# reaplica (caso tenha mudado)
 _theme_vars = _apply_theme(st.session_state.theme)
 
 
 # =============================================================================
-# Controlos: Ano/Mês/Data + Posição (Dia/Mês/Ano) + Forecast
+# Carregar dados (AGORA NO FIM) — usa session_state para renderizar o dashboard
 # =============================================================================
 
-if len(years_all) == 0:
-    st.warning("Sem anos válidos no ficheiro.")
-    st.stop()
+raw = st.session_state.raw_report_bytes
 
-ctrlL, ctrlR = st.columns([2.2, 1.0])
+df_daily = None
+_load_err = None
+if raw is not None:
+    try:
+        df_daily = load_report(raw)
+    except Exception as e:
+        _load_err = e
+        df_daily = None
 
-with ctrlL:
-    st.markdown("<div class='ctrl'>", unsafe_allow_html=True)
-
-    r1, r2, r3 = st.columns([1.0, 1.0, 1.2])
-    with r1:
-        st.session_state.pos_scope = st.radio("Posição", ["Dia", "Mês", "Ano"], horizontal=True, index=["Dia","Mês","Ano"].index(st.session_state.pos_scope))
-    with r2:
-        st.session_state.sel_year = st.selectbox("Ano", years_all, index=years_all.index(st.session_state.sel_year) if st.session_state.sel_year in years_all else len(years_all)-1)
-    with r3:
-        sel_year = int(st.session_state.sel_year)
-        months_in_year = sorted(df_daily[df_daily["data"].dt.year == sel_year]["data"].dt.month.unique().tolist())
-        if len(months_in_year) == 0:
-            months_in_year = list(range(1, 13))
-        default_month = last_month if sel_year == last_year else (months_in_year[-1] if months_in_year else 12)
-        if default_month not in months_in_year:
-            default_month = months_in_year[-1]
-        st.session_state.sel_month = st.selectbox(
-            "Mês",
-            months_in_year,
-            format_func=lambda m: f"{_PT_MONTHS.get(int(m), str(m))}",
-            index=months_in_year.index(st.session_state.sel_month) if st.session_state.sel_month in months_in_year else months_in_year.index(default_month),
-            help="Usado para a posição Mês (MTD) e para o resumo mensal."
-        )
-
-    # limites de data conforme seleção
-    sel_month = int(st.session_state.sel_month)
-
-    def _max_date_in_month(year: int, month: int) -> pd.Timestamp:
-        m0, m1 = _month_bounds(year, month)
-        dfx = df_daily[(df_daily["data"] >= m0) & (df_daily["data"] <= m1)]
-        if dfx.empty:
-            return min(last_date, m1)
-        return dfx["data"].max().normalize()
-
-    def _max_date_in_year(year: int) -> pd.Timestamp:
-        dfx = df_daily[df_daily["data"].dt.year == year]
-        if dfx.empty:
-            return last_date
-        return dfx["data"].max().normalize()
-
-    pos_scope = st.session_state.pos_scope
-
-    if pos_scope == "Dia":
-        max_d = _max_date_in_year(sel_year)
-        min_d = pd.Timestamp(year=sel_year, month=1, day=1)
-    elif pos_scope == "Mês":
-        max_d = _max_date_in_month(sel_year, sel_month)
-        min_d = pd.Timestamp(year=sel_year, month=sel_month, day=1)
-    else:
-        max_d = _max_date_in_year(sel_year)
-        min_d = pd.Timestamp(year=sel_year, month=1, day=1)
-
-    asof0 = st.session_state.asof_date
-    if not isinstance(asof0, pd.Timestamp):
-        asof0 = pd.Timestamp(asof0)
-    asof0 = asof0.normalize()
-    if asof0 < min_d:
-        asof0 = min_d
-    if asof0 > max_d:
-        asof0 = max_d
-
-    dcol1, dcol2 = st.columns([1.2, 1.0])
-    with dcol1:
-        st.session_state.asof_date = st.date_input(
-            "Data de referência",
-            value=asof0.date(),
-            min_value=min_d.date(),
-            max_value=max_d.date(),
-            help="Dia: compara com o mesmo dia dos anos anteriores. Mês: compara MTD (1..dia) com anos anteriores. Ano: compara YTD com anos anteriores."
-        )
-
-    with dcol2:
-        st.markdown(f"<div class='subtle'>Última data no ficheiro: <b>{last_date.date()}</b></div>", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with ctrlR:
-    st.markdown("<div class='ctrl'>", unsafe_allow_html=True)
-    # Forecast só faz sentido em Mês/Ano
-    if st.session_state.pos_scope in ("Mês", "Ano"):
-        st.session_state.show_forecast = st.toggle("Mostrar forecast", value=st.session_state.show_forecast)
-        st.markdown("<div class='subtle'>Quando ativo: substitui por projeção fim do mês/ano (cor diferente).</div>", unsafe_allow_html=True)
-    else:
-        st.session_state.show_forecast = False
-        st.toggle("Mostrar forecast", value=False, disabled=True)
-        st.markdown("<div class='subtle'>Forecast indisponível na posição do dia.</div>", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-asof_date = pd.Timestamp(st.session_state.asof_date).normalize()
-
-st.divider()
+if df_daily is None or (isinstance(df_daily, pd.DataFrame) and df_daily.empty):
+    st.info("Sem dados carregados. No final do dashboard existe o bloco para inserir o CSV.")
+    if _load_err is not None:
+        st.error(f"Erro ao ler o CSV atual: {_load_err}")
 
 
 # =============================================================================
-# Posição (quadro principal)
+# Se houver dados, renderiza dashboard completo
 # =============================================================================
 
-sel_year = int(st.session_state.sel_year)
-sel_month = int(st.session_state.sel_month)
-pos_scope = st.session_state.pos_scope
+if df_daily is not None and not df_daily.empty:
+    # Defaults baseados no ficheiro
+    last_date = df_daily["data"].max().normalize()
+    years_all = sorted(df_daily["data"].dt.year.dropna().unique().tolist())
+    last_year = int(last_date.year)
+    last_month = int(last_date.month)
 
-badge = f"{pos_scope}" + (" • Forecast" if st.session_state.show_forecast else "")
+    if st.session_state.sel_year is None:
+        st.session_state.sel_year = last_year
+    if st.session_state.sel_month is None:
+        st.session_state.sel_month = last_month
+    if st.session_state.asof_date is None:
+        st.session_state.asof_date = last_date
 
-if pos_scope == "Dia":
-    d = asof_date
-    df_curr = df_daily[df_daily["data"] == d]
-    k_curr = _period_kpis_from_daily(df_curr)
-    base, used_years = _baseline_day(df_daily, sel_year, d, years_all)
-    label = f"{d.date()}"
-
-    vol_d = _pct_change(k_curr["vol"], base.get("vol", np.nan))
-    mar_d = _pct_change(k_curr["mar"], base.get("mar", np.nan))
-    ops_d = _pct_change(k_curr["ops"], base.get("ops", np.nan))
-    cli_d = _pct_change(k_curr["clientes_end"], base.get("clientes_end", np.nan))
-    pp_d = _pp_change(k_curr["conv2_end"], base.get("conv2_end", np.nan))
-
-    bench_txt = f"vs média ({', '.join(map(str, used_years))})" if used_years else "vs anos anteriores (sem histórico suficiente)"
-
-    st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
-    st.markdown(f"<div class='subtle'>Comparação {bench_txt}. Stocks = valor do dia; Fluxos = o próprio dia.</div>", unsafe_allow_html=True)
-
-    _kpi_grid([
-        ("Clientes c/ acesso", _fmt_int(k_curr["clientes_end"]), _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("% clientes com operações", _fmt_pct(k_curr["conv2_end"], 1), _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Operações (dia)", _fmt_int_compact(k_curr["ops"], 1), _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Volume (dia)", _fmt_eur_compact(k_curr["vol"], 1), _delta_html_pct(vol_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Margem (dia)", _fmt_eur_compact(k_curr["mar"], 1), _delta_html_pct(mar_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Ticket médio (dia)", _fmt_eur_compact(k_curr["ticket"], 1), ""),
-    ])
-
-elif pos_scope == "Mês":
-    m_start, m_end = _month_bounds(sel_year, sel_month)
-    asof_m = min(asof_date, m_end)
-
-    df_mtd = _period_slice(df_daily, m_start, asof_m)
-    k_mtd = _period_kpis_from_daily(df_mtd)
-
-    if st.session_state.show_forecast:
-        k_show = _forecast_month_end(df_daily, sel_year, sel_month, asof_m)
-        base_full, used_years = _baseline_full_month(df_daily, sel_year, sel_month, years_all)
-        bench_txt = f"vs média mês completo ({', '.join(map(str, used_years))})" if used_years else "vs meses anteriores"
-        label = f"{_PT_MONTHS.get(sel_month)} {sel_year} (Forecast)"
-        v_class = "forecast"
-        meta = f"Forecast: escala linear do MTD ({k_show['days_elapsed']}/{k_show['days_in_month']} dias)."
+    if len(years_all) == 0:
+        st.warning("Sem anos válidos no ficheiro.")
     else:
-        k_show = k_mtd
-        base, used_years = _baseline_mtd(df_daily, sel_year, sel_month, asof_m, years_all)
-        base_full = base
-        bench_txt = f"vs média MTD ({', '.join(map(str, used_years))})" if used_years else "vs MTD anos anteriores"
-        label = f"{_PT_MONTHS.get(sel_month)} {sel_year} (MTD até {asof_m.date()})"
-        v_class = ""
-        meta = f"MTD até {asof_m.date()} (comparação 1..dia com anos anteriores)."
+        # =============================================================================
+        # Controlos (1 quadro): Dia/Mês/Ano + Forecast
+        # =============================================================================
 
-    vol_d = _pct_change(k_show["vol"], base_full.get("vol", np.nan))
-    mar_d = _pct_change(k_show["mar"], base_full.get("mar", np.nan))
-    ops_d = _pct_change(k_show["ops"], base_full.get("ops", np.nan))
-    cli_d = _pct_change(k_show["clientes_end"], base_full.get("clientes_end", np.nan))
-    pp_d = _pp_change(k_show["conv2_end"], base_full.get("conv2_end", np.nan))
+        st.markdown("<div class='ctrl'>", unsafe_allow_html=True)
 
-    st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
-    st.markdown(f"<div class='subtle'>{meta} Comparação {bench_txt}.</div>", unsafe_allow_html=True)
+        r1, r2, r3, r4 = st.columns([1.15, 1.05, 1.30, 1.05])
 
-    _kpi_grid([
-        ("Clientes c/ acesso (último)", f"<span class='{v_class}'>{_fmt_int(k_show['clientes_end'])}</span>", _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("% clientes com operações (último)", f"<span class='{v_class}'>{_fmt_pct(k_show['conv2_end'], 1)}</span>", _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Operações", f"<span class='{v_class}'>{_fmt_int_compact(k_show['ops'], 1)}</span>", _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Volume", f"<span class='{v_class}'>{_fmt_eur_compact(k_show['vol'], 1)}</span>", _delta_html_pct(vol_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Margem", f"<span class='{v_class}'>{_fmt_eur_compact(k_show['mar'], 1)}</span>", _delta_html_pct(mar_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Ticket médio", f"<span class='{v_class}'>{_fmt_eur_compact(k_show['ticket'], 1)}</span>", ""),
-    ])
-
-else:  # Ano
-    asof_y = asof_date
-    df_ytd = _ytd_slice(df_daily, sel_year, asof_y)
-    k_ytd = _period_kpis_from_daily(df_ytd)
-
-    if st.session_state.show_forecast:
-        k_show = _forecast_year_end(df_daily, sel_year, asof_y)
-        base_full, used_years = _baseline_full_year(df_daily, sel_year, years_all)
-        bench_txt = f"vs média ano completo ({', '.join(map(str, used_years))})" if used_years else "vs anos anteriores"
-        label = f"{sel_year} (Forecast)"
-        v_class = "forecast"
-        meta = f"Forecast anual via {k_show['share_mode']} (share usado: {k_show['share_used']:.1%})."
-    else:
-        k_show = k_ytd
-        base, used_years = _baseline_ytd(df_daily, sel_year, asof_y, years_all)
-        base_full = base
-        bench_txt = f"vs média YTD ({', '.join(map(str, used_years))})" if used_years else "vs anos anteriores"
-        label = f"{sel_year} (YTD até {asof_y.date()})"
-        v_class = ""
-        meta = f"YTD até {asof_y.date()} (comparação YTD com anos anteriores)."
-
-    vol_d = _pct_change(k_show["vol"], base_full.get("vol", np.nan))
-    mar_d = _pct_change(k_show["mar"], base_full.get("mar", np.nan))
-    ops_d = _pct_change(k_show["ops"], base_full.get("ops", np.nan))
-    cli_d = _pct_change(k_show["clientes_end"], base_full.get("clientes_end", np.nan))
-    pp_d = _pp_change(k_show["conv2_end"], base_full.get("conv2_end", np.nan))
-
-    st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
-    st.markdown(f"<div class='subtle'>{meta} Comparação {bench_txt}.</div>", unsafe_allow_html=True)
-
-    _kpi_grid([
-        ("Clientes c/ acesso (último)", f"<span class='{v_class}'>{_fmt_int(k_show['clientes_end'])}</span>", _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("% clientes com operações (último)", f"<span class='{v_class}'>{_fmt_pct(k_show['conv2_end'], 1)}</span>", _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Operações", f"<span class='{v_class}'>{_fmt_int_compact(k_show['ops'], 1)}</span>", _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Volume", f"<span class='{v_class}'>{_fmt_eur_compact(k_show['vol'], 1)}</span>", _delta_html_pct(vol_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Margem", f"<span class='{v_class}'>{_fmt_eur_compact(k_show['mar'], 1)}</span>", _delta_html_pct(mar_d) + f" <span class='subtle'>{bench_txt}</span>"),
-        ("Ticket médio", f"<span class='{v_class}'>{_fmt_eur_compact(k_show['ticket'], 1)}</span>", ""),
-    ])
-
-
-# =============================================================================
-# Resumo mensal (quadro limpo) — sem linhas vazias + números clean + sinais YoY
-# =============================================================================
-
-if st.session_state.show_month_table:
-    st.divider()
-    st.markdown(f"### {sel_year} — Resumo mensal (limpo)")
-    st.markdown("<div class='subtle'>Sem meses vazios. Clientes = número (fim do mês). Adoção = % clientes com operações (fim do mês). Volume/Margem compactos (K/M/B). Δ = vs mesmo mês do ano anterior.</div>", unsafe_allow_html=True)
-
-    df_month = build_monthly_year(df_daily, sel_year)
-
-    if df_month is None or df_month.empty:
-        st.info("Sem dados para o ano selecionado.")
-    else:
-        # manter só meses com algum dado e até ao último mês observado (evita linhas vazias)
-        base_num = df_month[[c for c in ["clientes_acesso", "conv_ops_s2", "num_operacoes", "volume_negocios", "margem_liquida"] if c in df_month.columns]].copy()
-        keep_any = base_num.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
-        dfm = df_month.loc[keep_any].copy()
-        if dfm.empty:
-            st.info("Sem dados numéricos no ano selecionado.")
-        else:
-            max_month_with_data = int(dfm["mes_num"].max())
-            dfm = dfm[dfm["mes_num"] <= max_month_with_data].copy()
-
-            # deltas YoY (mês completo) — só se existir ano-1
-            has_ly = (sel_year - 1) in years_all
-            if has_ly:
-                df_ly = build_monthly_year(df_daily, sel_year - 1)
-                df_ly = df_ly[["mes_num", "clientes_acesso", "conv_ops_s2", "num_operacoes", "volume_negocios", "margem_liquida"]].copy() if not df_ly.empty else pd.DataFrame()
-            else:
-                df_ly = pd.DataFrame()
-
-            if not df_ly.empty:
-                dfm = dfm.merge(df_ly, on="mes_num", how="left", suffixes=("", "_ly"))
-            else:
-                for c in ["clientes_acesso_ly", "conv_ops_s2_ly", "num_operacoes_ly", "volume_negocios_ly", "margem_liquida_ly"]:
-                    dfm[c] = np.nan
-
-            # formatar
-            rows = []
-            for _, r in dfm.iterrows():
-                mnum = int(r.get("mes_num"))
-                mes = _PT_MONTHS.get(mnum, str(mnum))
-
-                cli = r.get("clientes_acesso")
-                ado = r.get("conv_ops_s2")
-                ops = r.get("num_operacoes")
-                vol = r.get("volume_negocios")
-                mar = r.get("margem_liquida")
-
-                cli_ly = r.get("clientes_acesso_ly")
-                ado_ly = r.get("conv_ops_s2_ly")
-                ops_ly = r.get("num_operacoes_ly")
-                vol_ly = r.get("volume_negocios_ly")
-                mar_ly = r.get("margem_liquida_ly")
-
-                d_cli = _pct_change(cli, cli_ly)
-                d_ops = _pct_change(ops, ops_ly)
-                d_vol = _pct_change(vol, vol_ly)
-                d_mar = _pct_change(mar, mar_ly)
-                d_ado_pp = _pp_change(ado, ado_ly)
-
-                rows.append({
-                    "Mês": mes,
-                    "Clientes c/ acesso": _fmt_int(cli),
-                    "% clientes c/ operações": _fmt_pct(ado, 1),
-                    "Operações": _fmt_int_compact(ops, 1),
-                    "Volume": _fmt_eur_compact(vol, 1),
-                    "Margem": _fmt_eur_compact(mar, 1),
-                    "Δ Acesso": ("" if not has_ly else ("▲ +0%" if np.isnan(d_cli) else ("▲ " if d_cli>=0 else "▼ ") + ("+" if d_cli>=0 else "") + f"{d_cli*100:.0f}%")),
-                    "Δ Adoção": ("" if not has_ly else ("" if np.isnan(d_ado_pp) else ("▲ " if d_ado_pp>=0 else "▼ ") + ("+" if d_ado_pp>=0 else "") + f"{d_ado_pp*100:.1f} p.p.")),
-                    "Δ Ops": ("" if not has_ly else ("" if np.isnan(d_ops) else ("▲ " if d_ops>=0 else "▼ ") + ("+" if d_ops>=0 else "") + f"{d_ops*100:.0f}%")),
-                    "Δ Volume": ("" if not has_ly else ("" if np.isnan(d_vol) else ("▲ " if d_vol>=0 else "▼ ") + ("+" if d_vol>=0 else "") + f"{d_vol*100:.0f}%")),
-                    "Δ Margem": ("" if not has_ly else ("" if np.isnan(d_mar) else ("▲ " if d_mar>=0 else "▼ ") + ("+" if d_mar>=0 else "") + f"{d_mar*100:.0f}%")),
-                })
-
-            tbl = pd.DataFrame(rows)
-
-            st.dataframe(
-                tbl,
-                use_container_width=True,
-                hide_index=True,
-                height=min(420, 55 + 35 * (len(tbl) + 1)),
-                column_config={
-                    "Mês": st.column_config.TextColumn(width="small"),
-                    "Clientes c/ acesso": st.column_config.TextColumn(width="small"),
-                    "% clientes c/ operações": st.column_config.TextColumn(width="small"),
-                    "Operações": st.column_config.TextColumn(width="small"),
-                    "Volume": st.column_config.TextColumn(width="small"),
-                    "Margem": st.column_config.TextColumn(width="small"),
-                    "Δ Acesso": st.column_config.TextColumn(width="small"),
-                    "Δ Adoção": st.column_config.TextColumn(width="small"),
-                    "Δ Ops": st.column_config.TextColumn(width="small"),
-                    "Δ Volume": st.column_config.TextColumn(width="small"),
-                    "Δ Margem": st.column_config.TextColumn(width="small"),
-                }
+        with r1:
+            st.session_state.pos_scope = st.radio(
+                "Posição",
+                ["Dia", "Mês", "Ano"],
+                horizontal=True,
+                index=["Dia", "Mês", "Ano"].index(st.session_state.pos_scope),
             )
 
+        with r2:
+            st.session_state.sel_year = st.selectbox(
+                "Ano",
+                years_all,
+                index=years_all.index(st.session_state.sel_year) if st.session_state.sel_year in years_all else len(years_all) - 1,
+            )
+
+        sel_year = int(st.session_state.sel_year)
+        pos_scope = st.session_state.pos_scope
+
+        def _max_date_in_month(year: int, month: int) -> pd.Timestamp:
+            m0, m1 = _month_bounds(year, month)
+            dfx = df_daily[(df_daily["data"] >= m0) & (df_daily["data"] <= m1)]
+            if dfx.empty:
+                return min(last_date, m1)
+            return dfx["data"].max().normalize()
+
+        def _max_date_in_year(year: int) -> pd.Timestamp:
+            dfx = df_daily[df_daily["data"].dt.year == year]
+            if dfx.empty:
+                return last_date
+            return dfx["data"].max().normalize()
+
+        # Inputs condicionais
+        if pos_scope == "Dia":
+            with r3:
+                max_d = _max_date_in_year(sel_year)
+                min_d = pd.Timestamp(year=sel_year, month=1, day=1)
+
+                asof0 = st.session_state.asof_date
+                if not isinstance(asof0, pd.Timestamp):
+                    asof0 = pd.Timestamp(asof0)
+                asof0 = asof0.normalize()
+                if asof0 < min_d:
+                    asof0 = min_d
+                if asof0 > max_d:
+                    asof0 = max_d
+
+                st.session_state.asof_date = st.date_input(
+                    "Dia",
+                    value=asof0.date(),
+                    min_value=min_d.date(),
+                    max_value=max_d.date(),
+                    help="Comparação com o mesmo dia dos anos anteriores.",
+                )
+
+            with r4:
+                st.session_state.show_forecast = False
+                st.toggle("Forecast", value=False, disabled=True)
+
+        elif pos_scope == "Mês":
+            with r3:
+                months_in_year = sorted(df_daily[df_daily["data"].dt.year == sel_year]["data"].dt.month.unique().tolist())
+                if len(months_in_year) == 0:
+                    months_in_year = list(range(1, 13))
+                default_month = last_month if sel_year == last_year else (months_in_year[-1] if months_in_year else 12)
+                if default_month not in months_in_year:
+                    default_month = months_in_year[-1]
+
+                st.session_state.sel_month = st.selectbox(
+                    "Mês",
+                    months_in_year,
+                    format_func=lambda m: f"{_PT_MONTHS.get(int(m), str(m))}",
+                    index=months_in_year.index(st.session_state.sel_month) if st.session_state.sel_month in months_in_year else months_in_year.index(default_month),
+                )
+
+            with r4:
+                st.session_state.show_forecast = st.toggle("Forecast", value=st.session_state.show_forecast)
+
+            # asof automático: último dia disponível no mês selecionado
+            sel_month = int(st.session_state.sel_month)
+            st.session_state.asof_date = _max_date_in_month(sel_year, sel_month).date()
+
+        else:  # Ano
+            with r3:
+                st.markdown(f"<div class='subtle'>Até: <b>{_max_date_in_year(sel_year).date()}</b></div>", unsafe_allow_html=True)
+            with r4:
+                st.session_state.show_forecast = st.toggle("Forecast", value=st.session_state.show_forecast)
+
+            # asof automático: último dia disponível no ano
+            st.session_state.asof_date = _max_date_in_year(sel_year).date()
+
+        st.markdown(f"<div class='subtle'>Última data no ficheiro: <b>{last_date.date()}</b></div>", unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        asof_date = pd.Timestamp(st.session_state.asof_date).normalize()
+        sel_year = int(st.session_state.sel_year)
+        sel_month = int(st.session_state.sel_month)
+
+        st.divider()
+
+        # =============================================================================
+        # Posição (quadro principal)
+        # =============================================================================
+
+        badge = f"{pos_scope}" + (" • Forecast" if st.session_state.show_forecast else "")
+
+        if pos_scope == "Dia":
+            d = asof_date
+            df_curr = df_daily[df_daily["data"] == d]
+            k_curr = _period_kpis_from_daily(df_curr)
+            base, used_years = _baseline_day(df_daily, sel_year, d, years_all)
+            label = f"{d.date()}"
+
+            vol_d = _pct_change(k_curr["vol"], base.get("vol", np.nan))
+            mar_d = _pct_change(k_curr["mar"], base.get("mar", np.nan))
+            ops_d = _pct_change(k_curr["ops"], base.get("ops", np.nan))
+            cli_d = _pct_change(k_curr["clientes_end"], base.get("clientes_end", np.nan))
+            pp_d = _pp_change(k_curr["conv2_end"], base.get("conv2_end", np.nan))
+
+            bench_txt = f"vs média ({', '.join(map(str, used_years))})" if used_years else "vs anos anteriores (sem histórico suficiente)"
+
+            st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
+            st.markdown(f"<div class='subtle'>Comparação {bench_txt}. Stocks = valor do dia; Fluxos = o próprio dia.</div>", unsafe_allow_html=True)
+
+            _kpi_grid([
+                ("Clientes c/ acesso", _fmt_int(k_curr["clientes_end"]), _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>"),
+                ("% clientes com operações", _fmt_pct(k_curr["conv2_end"], 1), _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>"),
+                ("Operações (dia)", _fmt_int_compact(k_curr["ops"], 1), _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>"),
+                ("Volume (dia)", _fmt_eur_compact(k_curr["vol"], 1), _delta_html_pct(vol_d) + f" <span class='subtle'>{bench_txt}</span>"),
+                ("Margem (dia)", _fmt_eur_compact(k_curr["mar"], 1), _delta_html_pct(mar_d) + f" <span class='subtle'>{bench_txt}</span>"),
+            ])
+
+        elif pos_scope == "Mês":
+            m_start, m_end = _month_bounds(sel_year, sel_month)
+            asof_m = min(asof_date, m_end)
+
+            df_mtd = _period_slice(df_daily, m_start, asof_m)
+            k_real = _period_kpis_from_daily(df_mtd)
+
+            base, used_years = _baseline_mtd(df_daily, sel_year, sel_month, asof_m, years_all)
+            bench_txt = f"vs média MTD ({', '.join(map(str, used_years))})" if used_years else "vs MTD anos anteriores"
+
+            label = f"{_PT_MONTHS.get(sel_month)} {sel_year} (MTD até {asof_m.date()})"
+
+            # forecast extra (lado-a-lado)
+            fc_meta = ""
+            k_fc = None
+            if st.session_state.show_forecast:
+                k_fc = _forecast_month_end(df_daily, sel_year, sel_month, asof_m)
+                fc_meta = f"Forecast (fim do mês): escala linear do MTD ({k_fc['days_elapsed']}/{k_fc['days_in_month']} dias)."
+
+            vol_d = _pct_change(k_real["vol"], base.get("vol", np.nan))
+            mar_d = _pct_change(k_real["mar"], base.get("mar", np.nan))
+            ops_d = _pct_change(k_real["ops"], base.get("ops", np.nan))
+            cli_d = _pct_change(k_real["clientes_end"], base.get("clientes_end", np.nan))
+            pp_d = _pp_change(k_real["conv2_end"], base.get("conv2_end", np.nan))
+
+            st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
+            meta = f"MTD até {asof_m.date()} (comparação 1..dia com anos anteriores)."
+            if fc_meta:
+                meta = meta + " " + fc_meta
+            st.markdown(f"<div class='subtle'>{meta} Comparação {bench_txt}.</div>", unsafe_allow_html=True)
+
+            _kpi_grid([
+                (
+                    "Clientes c/ acesso (último)",
+                    _with_forecast(_fmt_int(k_real["clientes_end"]), _fmt_int(k_fc["clientes_end"]) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "% clientes com operações (último)",
+                    _with_forecast(_fmt_pct(k_real["conv2_end"], 1), _fmt_pct(k_fc["conv2_end"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "Operações",
+                    _with_forecast(_fmt_int_compact(k_real["ops"], 1), _fmt_int_compact(k_fc["ops"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "Volume",
+                    _with_forecast(_fmt_eur_compact(k_real["vol"], 1), _fmt_eur_compact(k_fc["vol"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(vol_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "Margem",
+                    _with_forecast(_fmt_eur_compact(k_real["mar"], 1), _fmt_eur_compact(k_fc["mar"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(mar_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+            ])
+
+        else:  # Ano
+            asof_y = asof_date
+            df_ytd = _ytd_slice(df_daily, sel_year, asof_y)
+            k_real = _period_kpis_from_daily(df_ytd)
+
+            base, used_years = _baseline_ytd(df_daily, sel_year, asof_y, years_all)
+            bench_txt = f"vs média YTD ({', '.join(map(str, used_years))})" if used_years else "vs anos anteriores"
+
+            label = f"{sel_year} (YTD até {asof_y.date()})"
+
+            k_fc = None
+            fc_meta = ""
+            if st.session_state.show_forecast:
+                k_fc = _forecast_year_end(df_daily, sel_year, asof_y)
+                fc_meta = f"Forecast (fim do ano) via {k_fc['share_mode']} (share usado: {k_fc['share_used']:.1%})."
+
+            vol_d = _pct_change(k_real["vol"], base.get("vol", np.nan))
+            mar_d = _pct_change(k_real["mar"], base.get("mar", np.nan))
+            ops_d = _pct_change(k_real["ops"], base.get("ops", np.nan))
+            cli_d = _pct_change(k_real["clientes_end"], base.get("clientes_end", np.nan))
+            pp_d = _pp_change(k_real["conv2_end"], base.get("conv2_end", np.nan))
+
+            st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
+            meta = f"YTD até {asof_y.date()} (comparação YTD com anos anteriores)."
+            if fc_meta:
+                meta = meta + " " + fc_meta
+            st.markdown(f"<div class='subtle'>{meta} Comparação {bench_txt}.</div>", unsafe_allow_html=True)
+
+            _kpi_grid([
+                (
+                    "Clientes c/ acesso (último)",
+                    _with_forecast(_fmt_int(k_real["clientes_end"]), _fmt_int(k_fc["clientes_end"]) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "% clientes com operações (último)",
+                    _with_forecast(_fmt_pct(k_real["conv2_end"], 1), _fmt_pct(k_fc["conv2_end"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "Operações",
+                    _with_forecast(_fmt_int_compact(k_real["ops"], 1), _fmt_int_compact(k_fc["ops"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "Volume",
+                    _with_forecast(_fmt_eur_compact(k_real["vol"], 1), _fmt_eur_compact(k_fc["vol"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(vol_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+                (
+                    "Margem",
+                    _with_forecast(_fmt_eur_compact(k_real["mar"], 1), _fmt_eur_compact(k_fc["mar"], 1) if k_fc else "—", st.session_state.show_forecast),
+                    _delta_html_pct(mar_d) + f" <span class='subtle'>{bench_txt}</span>",
+                ),
+            ])
+
+        # =============================================================================
+        # Resumo mensal (HTML) — barra de % preenchida com a percentagem (0..100)
+        # =============================================================================
+
+        if st.session_state.show_month_table:
+            st.divider()
+            st.markdown(f"### {sel_year} — Resumo mensal")
+
+            compare_year = sel_year - 1
+            has_ly = compare_year in years_all
+
+            df_month = build_monthly_year(df_daily, sel_year)
+
+            if df_month is None or df_month.empty:
+                st.info("Sem dados para o ano selecionado.")
+            else:
+                base_num = df_month[[c for c in ["clientes_acesso", "conv_ops_s2", "num_operacoes", "volume_negocios", "margem_liquida"] if c in df_month.columns]].copy()
+                keep_any = base_num.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
+                dfm = df_month.loc[keep_any].copy()
+
+                if dfm.empty:
+                    st.info("Sem dados numéricos no ano selecionado.")
+                else:
+                    max_month_with_data = int(dfm["mes_num"].max())
+                    dfm = dfm[dfm["mes_num"] <= max_month_with_data].copy()
+
+                    if has_ly:
+                        df_ly = build_monthly_year(df_daily, compare_year)
+                        df_ly = df_ly[["mes_num", "clientes_acesso", "conv_ops_s2", "num_operacoes", "volume_negocios", "margem_liquida"]].copy() if not df_ly.empty else pd.DataFrame()
+                    else:
+                        df_ly = pd.DataFrame()
+
+                    if not df_ly.empty:
+                        dfm = dfm.merge(df_ly, on="mes_num", how="left", suffixes=("", "_ly"))
+                    else:
+                        for c in ["clientes_acesso_ly", "conv_ops_s2_ly", "num_operacoes_ly", "volume_negocios_ly", "margem_liquida_ly"]:
+                            dfm[c] = np.nan
+
+                    def _arrow_pct(delta):
+                        if delta is None or (isinstance(delta, float) and np.isnan(delta)):
+                            return "", "flat"
+                        if delta > 0.0005:
+                            return f"▲ {delta*100:.0f}%", "up"
+                        if delta < -0.0005:
+                            return f"▼ {delta*100:.0f}%", "down"
+                        return "→ 0%", "flat"
+
+                    def _arrow_pp(delta_pp):
+                        if delta_pp is None or (isinstance(delta_pp, float) and np.isnan(delta_pp)):
+                            return "", "flat"
+                        if delta_pp > 0.0005:
+                            return f"▲ +{delta_pp*100:.1f} p.p.", "up"
+                        if delta_pp < -0.0005:
+                            return f"▼ {delta_pp*100:.1f} p.p.", "down"
+                        return "→ 0.0 p.p.", "flat"
+
+                    head = f"""
+                    <div class='panel'>
+                      <div class='subtle'>Comparação com {compare_year}{'' if has_ly else ' (indisponível)'}</div>
+                      <div class='tbl-wrap'>
+                        <table class='tbl'>
+                          <thead>
+                            <tr>
+                              <th>Mês</th>
+                              <th>Clientes c/ acesso</th>
+                              <th class='pctcell'>% clientes c/ operações</th>
+                              <th>Operações</th>
+                              <th>Volume</th>
+                              <th>Margem</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                    """
+
+                    body = ""
+                    for _, r in dfm.iterrows():
+                        mnum = int(r.get("mes_num"))
+                        mes = _PT_MONTHS.get(mnum, str(mnum))
+
+                        cli = r.get("clientes_acesso")
+                        ado = r.get("conv_ops_s2")
+                        ops = r.get("num_operacoes")
+                        vol = r.get("volume_negocios")
+                        mar = r.get("margem_liquida")
+
+                        cli_ly = r.get("clientes_acesso_ly")
+                        ado_ly = r.get("conv_ops_s2_ly")
+                        ops_ly = r.get("num_operacoes_ly")
+                        vol_ly = r.get("volume_negocios_ly")
+                        mar_ly = r.get("margem_liquida_ly")
+
+                        d_cli = _pct_change(cli, cli_ly) if has_ly else np.nan
+                        d_ops = _pct_change(ops, ops_ly) if has_ly else np.nan
+                        d_vol = _pct_change(vol, vol_ly) if has_ly else np.nan
+                        d_mar = _pct_change(mar, mar_ly) if has_ly else np.nan
+                        d_ado_pp = _pp_change(ado, ado_ly) if has_ly else np.nan
+
+                        a_cli_txt, a_cli_cls = _arrow_pct(d_cli)
+                        a_ops_txt, a_ops_cls = _arrow_pct(d_ops)
+                        a_vol_txt, a_vol_cls = _arrow_pct(d_vol)
+                        a_mar_txt, a_mar_cls = _arrow_pct(d_mar)
+                        a_ado_txt, a_ado_cls = _arrow_pp(d_ado_pp)
+
+                        # percent bar: aceita ado como 0..1, 0..100, ou "18.1%"
+                        ado_raw = ado
+
+                        p = 0.0
+                        try:
+                            if ado_raw is None or (isinstance(ado_raw, float) and np.isnan(ado_raw)):
+                                p = 0.0
+                            else:
+                                s = str(ado_raw).strip().replace("%", "").replace(",", ".")
+                                v = float(s)
+
+                                # Se vier 18.1 -> trata como %
+                                if v > 1.0:
+                                    v = v / 100.0
+
+                                # clamp 0..1
+                                p = max(0.0, min(1.0, v))
+                        except Exception:
+                            p = 0.0
+
+                        w = round(p * 100, 1)   # deixa com 1 casa decimal (mais “smooth”)
+
+                        body += f"""
+                        <tr>
+                          <td><b>{mes}</b></td>
+                          <td>{_fmt_int(cli)}{('<span class="arrow '+a_cli_cls+'">'+a_cli_txt+'</span>') if a_cli_txt else ''}</td>
+                          <td class='pctcell'>
+                            <span class='bar'><span class='fill' style='width:{w}%' ></span></span>
+                            <span class='pcttxt'>{_fmt_pct(ado, 1)}{('<span class="arrow '+a_ado_cls+'">'+a_ado_txt+'</span>') if a_ado_txt else ''}</span>
+                          </td>
+                          <td>{_fmt_int_compact(ops, 1)}{('<span class="arrow '+a_ops_cls+'">'+a_ops_txt+'</span>') if a_ops_txt else ''}</td>
+                          <td>{_fmt_eur_compact(vol, 1)}{('<span class="arrow '+a_vol_cls+'">'+a_vol_txt+'</span>') if a_vol_txt else ''}</td>
+                          <td>{_fmt_eur_compact(mar, 1)}{('<span class="arrow '+a_mar_cls+'">'+a_mar_txt+'</span>') if a_mar_txt else ''}</td>
+                        </tr>
+                        """
+
+                    tail = """
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    """
+
+                    st.html(head + body + tail)
+
+        # =============================================================================
+        # Gráficos (YoY) — Volume/Operações/Margem
+        # =============================================================================
+
+        st.divider()
+        st.markdown("### Evolução mensal — comparação YoY")
+
+        prev_year = sel_year - 1
+
+        df_curr_y = build_monthly_year(df_daily, sel_year)
+        df_prev_y = build_monthly_year(df_daily, prev_year) if prev_year in years_all else pd.DataFrame()
+
+        if df_curr_y is None or df_curr_y.empty:
+            st.info("Sem dados para gráficos.")
+        else:
+            base_num = df_curr_y[[c for c in ["num_operacoes", "volume_negocios", "margem_liquida"] if c in df_curr_y.columns]].copy()
+            keep_any = base_num.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
+            df_curr_y = df_curr_y.loc[keep_any].copy()
+
+            if df_curr_y.empty:
+                st.info("Sem dados para gráficos.")
+            else:
+                if df_prev_y is not None and not df_prev_y.empty:
+                    base_num2 = df_prev_y[[c for c in ["num_operacoes", "volume_negocios", "margem_liquida"] if c in df_prev_y.columns]].copy()
+                    keep_any2 = base_num2.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
+                    df_prev_y = df_prev_y.loc[keep_any2].copy()
+
+                g1, g2, g3 = st.columns(3)
+                with g1:
+                    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                    st.markdown("**Volume de negócios (YoY)**")
+                    st.altair_chart(
+                        _chart_yoy_line(
+                            df_curr_y,
+                            sel_year,
+                            df_prev_y if (df_prev_y is not None and not df_prev_y.empty) else None,
+                            prev_year if (df_prev_y is not None and not df_prev_y.empty) else None,
+                            "volume_negocios",
+                            "Volume",
+                            "€",
+                            _theme_vars["warn"],          # ano corrente a laranja
+                            _theme_vars["accent2"],
+                            is_pct=False,
+                        ),
+                        use_container_width=True,
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                with g2:
+                    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                    st.markdown("**Nº de operações (YoY)**")
+                    st.altair_chart(
+                        _chart_yoy_line(
+                            df_curr_y,
+                            sel_year,
+                            df_prev_y if (df_prev_y is not None and not df_prev_y.empty) else None,
+                            prev_year if (df_prev_y is not None and not df_prev_y.empty) else None,
+                            "num_operacoes",
+                            "Operações",
+                            "Nº",
+                            _theme_vars["accent"],
+                            _theme_vars["accent2"],
+                            is_pct=False,
+                        ),
+                        use_container_width=True,
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                with g3:
+                    st.markdown("<div class='panel'>", unsafe_allow_html=True)
+                    st.markdown("**Margem líquida (YoY)**")
+                    st.altair_chart(
+                        _chart_yoy_line(
+                            df_curr_y,
+                            sel_year,
+                            df_prev_y if (df_prev_y is not None and not df_prev_y.empty) else None,
+                            prev_year if (df_prev_y is not None and not df_prev_y.empty) else None,
+                            "margem_liquida",
+                            "Margem",
+                            "€",
+                            _theme_vars["good"],
+                            _theme_vars["accent2"],
+                            is_pct=False,
+                        ),
+                        use_container_width=True,
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+        # =============================================================================
+        # Detalhe diário
+        # =============================================================================
+
+        st.divider()
+        st.markdown("### Detalhe diário")
+        st.markdown("<div class='subtle'>Últimos 30 dias (charts) + tabela (últimos 60). Útil para validar picos e o ritmo do forecast.</div>", unsafe_allow_html=True)
+
+        d30 = (df_daily["data"] >= (last_date - pd.Timedelta(days=30)))
+        df_30 = df_daily.loc[d30].sort_values("data").copy()
+
+        k_last = _period_kpis_from_daily(df_daily[df_daily["data"] == last_date])
+
+        _kpi_grid([
+            ("Data (último registo)", f"{last_date.date()}", ""),
+            ("Clientes com acesso", _fmt_int(k_last.get("clientes_end")), ""),
+            ("% clientes com operações", _fmt_pct(k_last.get("conv2_end"), 1), ""),
+            ("Operações (dia)", _fmt_int_compact(k_last.get("ops"), 1), ""),
+            ("Volume (dia)", _fmt_eur_compact(k_last.get("vol"), 1), ""),
+        ])
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("<div class='panel'>", unsafe_allow_html=True)
+            st.markdown("**Volume — últimos 30 dias**")
+            d = df_30[["data", "volume_negocios"]].copy()
+            d["volume_negocios"] = pd.to_numeric(d["volume_negocios"], errors="coerce")
+            d = d[d["volume_negocios"].notna()]
+            ch = alt.Chart(d).mark_line(interpolate="monotone", color=_theme_vars["accent"]).encode(
+                x=alt.X("data:T", title=None),
+                y=alt.Y("volume_negocios:Q", title="€"),
+                tooltip=[alt.Tooltip("data:T", title="Data"), alt.Tooltip("volume_negocios:Q", title="Volume", format=",.0f")],
+            ).properties(height=240)
+            st.altair_chart(ch, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with c2:
+            st.markdown("<div class='panel'>", unsafe_allow_html=True)
+            st.markdown("**Operações — últimos 30 dias**")
+            d = df_30[["data", "num_operacoes"]].copy()
+            d["num_operacoes"] = pd.to_numeric(d["num_operacoes"], errors="coerce")
+            d = d[d["num_operacoes"].notna()]
+            ch = alt.Chart(d).mark_bar(color=_theme_vars["accent2"]).encode(
+                x=alt.X("data:T", title=None),
+                y=alt.Y("num_operacoes:Q", title="Nº"),
+                tooltip=[alt.Tooltip("data:T", title="Data"), alt.Tooltip("num_operacoes:Q", title="Operações", format=",.0f")],
+            ).properties(height=240)
+            st.altair_chart(ch, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with st.expander("Ver dados diários (últimos 60 dias)", expanded=False):
+            df_60 = df_daily[df_daily["data"] >= (last_date - pd.Timedelta(days=60))].copy().sort_values("data")
+
+            rename = {
+                "data": "Data",
+                "clientes_acesso": "Clientes com acesso",
+                "pedidos_pendentes": "Pedidos pendentes",
+                "novos_pedidos": "Novos pedidos",
+                "desist_total": "Desistências (Total)",
+                "desist_ativados": "De Ativados",
+                "desist_pendentes": "De Pendentes",
+                "ativados_ops_s1": "Ativados c/ operações (S1)",
+                "conv_ops_s1": "% ops/acesso (S1)",
+                "ativados_ops_s2": "Ativados c/ operações (S2)",
+                "conv_ops_s2": "% clientes com operações (S2)",
+                "num_operacoes": "Nº operações",
+                "volume_negocios": "Volume negócios",
+                "margem_liquida": "Margem líquida",
+            }
+
+            show = df_60.rename(columns=rename)
+            show["Data"] = pd.to_datetime(show["Data"], errors="coerce").dt.date
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
 
 # =============================================================================
-# Gráficos (mensal)
+# Upload CSV (NO FIM)
 # =============================================================================
 
 st.divider()
-st.markdown("### Evolução mensal")
-st.markdown("<div class='subtle'>Cores corporativas + meses sem dados filtrados.</div>", unsafe_allow_html=True)
+with st.expander("Carregar dados (CSV)", expanded=True):
+    cc1, cc2 = st.columns([2, 1])
+    with cc1:
+        upl = st.file_uploader("CSV do Report", type=["csv"], label_visibility="collapsed")
+    with cc2:
+        fallback_path = Path(__file__).with_name("Report.csv")
+        use_fallback = False
+        if upl is None and fallback_path.exists():
+            use_fallback = st.checkbox("Usar Report.csv local", value=False)
 
-df_month_chart = build_monthly_year(df_daily, sel_year)
-if df_month_chart is None or df_month_chart.empty:
-    st.info("Sem dados para gráficos.")
-else:
-    # filtrar meses sem dados
-    base_num = df_month_chart[[c for c in ["num_operacoes", "volume_negocios", "margem_liquida", "clientes_acesso"] if c in df_month_chart.columns]].copy()
-    keep_any = base_num.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
-    df_month_chart = df_month_chart.loc[keep_any].copy()
+    new_raw = None
+    if upl is not None:
+        new_raw = upl.read()
+    elif use_fallback and fallback_path.exists():
+        new_raw = fallback_path.read_bytes()
 
-    g1, g2, g3 = st.columns(3)
-    with g1:
-        st.markdown("<div class='panel'>", unsafe_allow_html=True)
-        st.markdown("**Volume de negócios**")
-        st.altair_chart(_chart_monthly_bar(df_month_chart, "volume_negocios", "Volume", "€", _theme_vars["accent"]), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    if new_raw is not None:
+        st.session_state.raw_report_bytes = new_raw
+        st.rerun()
 
-    with g2:
-        st.markdown("<div class='panel'>", unsafe_allow_html=True)
-        st.markdown("**Nº de operações**")
-        st.altair_chart(_chart_monthly_bar(df_month_chart, "num_operacoes", "Operações", "Nº", _theme_vars["accent2"]), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with g3:
-        st.markdown("<div class='panel'>", unsafe_allow_html=True)
-        st.markdown("**Margem líquida**")
-        st.altair_chart(_chart_monthly_area_line(df_month_chart, "margem_liquida", "Margem", "€", _theme_vars["good"]), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-
-    st.markdown("### Acesso vs Adoção (uso)")
-    st.markdown("<div class='subtle'>Clientes com acesso (stock) • Clientes com operações (stock) • % clientes com operações.</div>", unsafe_allow_html=True)
-
-    st.markdown("<div class='panel'>", unsafe_allow_html=True)
-    st.altair_chart(_chart_adoption(df_month_chart, _theme_vars["accent"], _theme_vars["accent2"]), use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# =============================================================================
-# Detalhe diário (opcional)
-# =============================================================================
-
-if st.session_state.show_daily_detail:
-    st.divider()
-    st.markdown("### Detalhe diário (secundário)")
-    st.markdown("<div class='subtle'>Últimos 30 dias (charts) + tabela (últimos 60). Útil para validar picos e o ritmo do forecast.</div>", unsafe_allow_html=True)
-
-    d30 = (df_daily["data"] >= (last_date - pd.Timedelta(days=30)))
-    df_30 = df_daily.loc[d30].sort_values("data").copy()
-    last = df_daily.sort_values("data").iloc[-1]
-
-    k_last = _period_kpis_from_daily(df_daily[df_daily["data"] == last_date])
-
-    _kpi_grid([
-        ("Data (último registo)", f"{last_date.date()}", ""),
-        ("Clientes com acesso", _fmt_int(k_last.get("clientes_end")), ""),
-        ("% clientes com operações", _fmt_pct(k_last.get("conv2_end"), 1), ""),
-        ("Operações (dia)", _fmt_int_compact(k_last.get("ops"), 1), ""),
-        ("Volume (dia)", _fmt_eur_compact(k_last.get("vol"), 1), ""),
-        ("Margem (dia)", _fmt_eur_compact(k_last.get("mar"), 1), ""),
-    ])
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("<div class='panel'>", unsafe_allow_html=True)
-        st.markdown("**Volume — últimos 30 dias**")
-        d = df_30[["data", "volume_negocios"]].copy()
-        d["volume_negocios"] = pd.to_numeric(d["volume_negocios"], errors="coerce")
-        d = d[d["volume_negocios"].notna()]
-        ch = alt.Chart(d).mark_line(interpolate="monotone", color=_theme_vars["accent"]).encode(
-            x=alt.X("data:T", title=None),
-            y=alt.Y("volume_negocios:Q", title="€"),
-            tooltip=[alt.Tooltip("data:T", title="Data"), alt.Tooltip("volume_negocios:Q", title="Volume", format=",.0f")],
-        ).properties(height=240)
-        st.altair_chart(ch, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with c2:
-        st.markdown("<div class='panel'>", unsafe_allow_html=True)
-        st.markdown("**Operações — últimos 30 dias**")
-        d = df_30[["data", "num_operacoes"]].copy()
-        d["num_operacoes"] = pd.to_numeric(d["num_operacoes"], errors="coerce")
-        d = d[d["num_operacoes"].notna()]
-        ch = alt.Chart(d).mark_line(interpolate="monotone", color=_theme_vars["accent2"]).encode(
-            x=alt.X("data:T", title=None),
-            y=alt.Y("num_operacoes:Q", title="Nº"),
-            tooltip=[alt.Tooltip("data:T", title="Data"), alt.Tooltip("num_operacoes:Q", title="Operações", format=",.0f")],
-        ).properties(height=240)
-        st.altair_chart(ch, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with st.expander("Ver dados diários (últimos 60 dias)", expanded=False):
-        df_60 = df_daily[df_daily["data"] >= (last_date - pd.Timedelta(days=60))].copy().sort_values("data")
-
-        rename = {
-            "data": "Data",
-            "clientes_acesso": "Clientes com acesso",
-            "pedidos_pendentes": "Pedidos pendentes",
-            "novos_pedidos": "Novos pedidos",
-            "desist_total": "Desistências (Total)",
-            "desist_ativados": "De Ativados",
-            "desist_pendentes": "De Pendentes",
-            "ativados_ops_s1": "Ativados c/ operações (S1)",
-            "conv_ops_s1": "% ops/acesso (S1)",
-            "ativados_ops_s2": "Ativados c/ operações (S2)",
-            "conv_ops_s2": "% clientes com operações (S2)",
-            "num_operacoes": "Nº operações",
-            "volume_negocios": "Volume negócios",
-            "margem_liquida": "Margem líquida",
-        }
-
-        show = df_60.rename(columns=rename)
-        show["Data"] = pd.to_datetime(show["Data"], errors="coerce").dt.date
-        st.dataframe(show, use_container_width=True, height=420)
-
-
-st.caption("Dashboard: Posição (Dia/Mês/Ano) vs média anos anteriores + forecast (opcional) + tema Light/Dark + resumo mensal sem linhas vazias.")
+st.caption(
+    "Dashboard: Posição (Dia/Mês/Ano) vs média anos anteriores + forecast (opcional, lado-a-lado) + tema Light/Dark + resumo mensal (HTML) com barra laranja na percentagem + comparação YoY (Volume/Operações/Margem)."
+)
