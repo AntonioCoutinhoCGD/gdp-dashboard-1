@@ -1,5 +1,5 @@
 # cambial_dashboard_anual.py
-# Dashboard Streamlit (corporativo) — Posição (Mês/Ano) + YoY (média anos anteriores) + Estimativa (sempre visível, lado-a-lado) + Tema Light/Dark
+# Dashboard Streamlit (corporativo) — Posição (Mês/Ano) + YoY (média anos anteriores) + Estimativa (sempre visível, lado-a-lado) + Tema Light (fixo)
 # Como correr:
 #   pip install streamlit pandas numpy altair
 #   streamlit run cambial_dashboard_anual.py
@@ -20,7 +20,19 @@ import altair as alt
 # =============================================================================
 # LOGO (CGD)
 # =============================================================================
+# Dica: para garantir que o ícone da tab aparece sempre, coloca um ficheiro PNG
+# na mesma pasta com o nome: cgd_logo.png
 LOGO_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bd/Logo_of_Caixa_Geral_de_Dep%C3%B3sitos.svg/250px-Logo_of_Caixa_Geral_de_Dep%C3%B3sitos.svg.png"
+
+
+def _local_logo_candidate() -> Optional[str]:
+    """Procura um PNG local para usar como page_icon (mais fiável do que URL)."""
+    here = Path(__file__).resolve().parent
+    for name in ("cgd_logo.png", "CGD_logo.png", "logo_cgd.png", "logo.png", "favicon.png", "icon.png"):
+        p = here / name
+        if p.exists() and p.is_file():
+            return str(p)
+    return None
 
 
 @lru_cache(maxsize=2)
@@ -38,7 +50,7 @@ def _download_logo_to_local(url: str) -> Optional[str]:
         return None
 
 
-LOGO_LOCAL = _download_logo_to_local(LOGO_URL)
+LOGO_LOCAL = _local_logo_candidate() or _download_logo_to_local(LOGO_URL)
 
 
 # =============================================================================
@@ -377,12 +389,18 @@ _PT_MONTHS = {
     7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"
 }
 
+_PT_MONTHS_FULL = {
+    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho",
+    7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"
+}
+
 
 # =============================================================================
-# Tema (Light/Dark) — CSS + Altair theme
+# Tema (Light fixo) — CSS + Altair theme
 # =============================================================================
 
 def _apply_theme(theme: str):
+    # Mantém definição completa, mas o dashboard usa sempre Light (sem opção UI).
     if theme == "Dark":
         bg = "#0E1117"
         panel = "#111827"
@@ -590,16 +608,6 @@ def _apply_theme(theme: str):
       div[data-testid="stDateInput"] svg {{ fill: var(--c-subtle) !important; }}
       div[data-baseweb="calendar"] * {{ color: var(--c-text) !important; }}
       div[data-baseweb="calendar"] {{ background: var(--c-card) !important; }}
-
-      /* Popover (settings) */
-      div[data-testid="stPopoverBody"] {{
-        background: var(--c-card) !important;
-        color: var(--c-text) !important;
-        border: 1px solid var(--c-border) !important;
-        border-radius: 16px !important;
-        box-shadow: 0 10px 28px var(--c-shadow) !important;
-      }}
-      div[data-testid="stPopoverBody"] * {{ color: var(--c-text) !important; }}
 
       /* =========================================================
          Upload (CSV) — força LIGHT ficar claro (expander + uploader)
@@ -1299,26 +1307,26 @@ def _chart_yoy_line(
     frames.append(d1)
 
     if df_a_forecast is not None and (not df_a_forecast.empty) and value_col in df_a_forecast.columns:
-            d1f = df_a_forecast[["mes_num", "mes", value_col]].copy()
-            d1f[value_col] = pd.to_numeric(d1f[value_col], errors="coerce")
-            d1f = d1f[d1f[value_col].notna()].copy()
+        d1f = df_a_forecast[["mes_num", "mes", value_col]].copy()
+        d1f[value_col] = pd.to_numeric(d1f[value_col], errors="coerce")
+        d1f = d1f[d1f[value_col].notna()].copy()
 
-            # ---- FIX: evita gap entre Real e Forecast ----
-            # Se o forecast começar no mês seguinte, cria um ponto âncora no último mês "Real"
-            # com o mesmo valor, mas marcado como "Forecast" (assim a linha tracejada encosta).
-            if len(d1) and len(d1f):
-                last_real_m = int(pd.to_numeric(d1["mes_num"], errors="coerce").max())
-                first_fc_m = int(pd.to_numeric(d1f["mes_num"], errors="coerce").min())
-                if first_fc_m > last_real_m:
-                    anchor = d1.loc[d1["mes_num"].astype(int) == last_real_m, ["mes_num", "mes", value_col]].tail(1).copy()
-                    if not anchor.empty:
-                        anchor["Ano"] = str(year_a)
-                        anchor["Segmento"] = "Forecast"
-                        d1f = pd.concat([anchor, d1f], ignore_index=True)
+        # ---- FIX: evita gap entre Real e Forecast ----
+        # Se o forecast começar no mês seguinte, cria um ponto âncora no último mês "Real"
+        # com o mesmo valor, mas marcado como "Forecast" (assim a linha tracejada encosta).
+        if len(d1) and len(d1f):
+            last_real_m = int(pd.to_numeric(d1["mes_num"], errors="coerce").max())
+            first_fc_m = int(pd.to_numeric(d1f["mes_num"], errors="coerce").min())
+            if first_fc_m > last_real_m:
+                anchor = d1.loc[d1["mes_num"].astype(int) == last_real_m, ["mes_num", "mes", value_col]].tail(1).copy()
+                if not anchor.empty:
+                    anchor["Ano"] = str(year_a)
+                    anchor["Segmento"] = "Forecast"
+                    d1f = pd.concat([anchor, d1f], ignore_index=True)
 
-            d1f["Ano"] = str(year_a)
-            d1f["Segmento"] = "Forecast"
-            frames.append(d1f)
+        d1f["Ano"] = str(year_a)
+        d1f["Segmento"] = "Forecast"
+        frames.append(d1f)
 
     if df_b is not None and (not df_b.empty) and value_col in df_b.columns and year_b is not None:
         d2 = df_b[["mes_num", "mes", value_col]].copy()
@@ -1375,10 +1383,11 @@ def _chart_yoy_line(
         point=alt.OverlayMarkDef(size=70), interpolate="monotone"
     )
 
-    # linha forecast (tracejada)
+    # linha forecast (tracejada) — COM BOLINHAS
     ch_fc = base.transform_filter(alt.datum.Segmento == "Forecast").mark_line(
         interpolate="monotone",
         strokeDash=[6, 4],
+        point=alt.OverlayMarkDef(size=55),
     )
 
     return (ch_real + ch_fc)
@@ -1420,9 +1429,8 @@ def _with_estimativa(real_str: str, est_str: str) -> str:
 
 # Estimativa é SEMPRE visível (não há opção).
 SHOW_ESTIMATIVA = True
+SHOW_MONTH_TABLE = True
 
-if "theme" not in st.session_state:
-    st.session_state.theme = "Dark"
 if "pos_scope" not in st.session_state:
     st.session_state.pos_scope = "Mês"
 if "sel_year" not in st.session_state:
@@ -1431,22 +1439,21 @@ if "sel_month" not in st.session_state:
     st.session_state.sel_month = None
 if "asof_date" not in st.session_state:
     st.session_state.asof_date = None
-if "show_month_table" not in st.session_state:
-    st.session_state.show_month_table = True
 if "raw_report_bytes" not in st.session_state:
     st.session_state.raw_report_bytes = None
 
 # detalhe diário sempre ligado
 st.session_state.show_daily_detail = True
 
-_theme_vars = _apply_theme(st.session_state.theme)
+# tema fixo: Light
+_theme_vars = _apply_theme("Light")
 
 
 # =============================================================================
-# Topo: logo + título + settings
+# Topo: logo + título (sem settings)
 # =============================================================================
 
-c_logo, c_title, c_set = st.columns([0.12, 2.55, 0.55])
+c_logo, c_title = st.columns([0.12, 2.88])
 with c_logo:
     try:
         st.image(LOGO_URL, width=82)
@@ -1461,20 +1468,13 @@ with c_title:
         """
         <div class='topbar'>
           <div>
-            <div class='topbar-title'>Plataforma Cambial — Executive Dashboard</div>
-            <div class='topbar-sub'>Foco: crescimento de acesso • adoção/uso • margem. Posição vs média dos anos anteriores + estimativa (sempre visível).</div>
+            <div class='topbar-title'>Plataforma Cambial — Dashboard</div>
+            <div class='topbar-sub'>FNC</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-with c_set:
-    with st.popover("⚙️", use_container_width=True):
-        st.session_state.theme = st.selectbox("Tema", ["Light", "Dark"], index=1 if st.session_state.theme == "Dark" else 0)
-        st.session_state.show_month_table = st.toggle("Mostrar resumo mensal", value=st.session_state.show_month_table)
-
-# reaplica (caso tenha mudado)
-_theme_vars = _apply_theme(st.session_state.theme)
 
 
 # =============================================================================
@@ -1520,12 +1520,12 @@ if df_daily is not None and not df_daily.empty:
         st.warning("Sem anos válidos no ficheiro.")
     else:
         # =============================================================================
-        # Controlos (1 quadro): Mês/Ano + indicador fixo de Estimativa
+        # Controlos (1 quadro): Mês/Ano
         # =============================================================================
 
         st.markdown("<div class='ctrl'>", unsafe_allow_html=True)
 
-        r1, r2, r3, r4 = st.columns([1.15, 1.05, 1.30, 1.05])
+        r1, r2, r3 = st.columns([1.15, 1.05, 2.35])
 
         with r1:
             st.session_state.pos_scope = st.radio(
@@ -1574,17 +1574,12 @@ if df_daily is not None and not df_daily.empty:
                     index=months_in_year.index(st.session_state.sel_month) if st.session_state.sel_month in months_in_year else months_in_year.index(default_month),
                 )
 
-            with r4:
-                st.markdown("<div class='subtle' style='margin-top: 26px; text-align:right;'><b>Estimativa</b> ativa</div>", unsafe_allow_html=True)
-
             sel_month = int(st.session_state.sel_month)
             st.session_state.asof_date = _max_date_in_month(sel_year, sel_month).date()
 
         else:  # Ano
             with r3:
                 st.markdown(f"<div class='subtle'>Até: <b>{_max_date_in_year(sel_year).date()}</b></div>", unsafe_allow_html=True)
-            with r4:
-                st.markdown("<div class='subtle' style='margin-top: 26px; text-align:right;'><b>Estimativa</b> ativa</div>", unsafe_allow_html=True)
 
             st.session_state.asof_date = _max_date_in_year(sel_year).date()
 
@@ -1601,8 +1596,6 @@ if df_daily is not None and not df_daily.empty:
         # Posição (quadro principal) — apenas Mês/Ano
         # =============================================================================
 
-        badge = f"{pos_scope} • Estimativa"
-
         if pos_scope == "Mês":
             m_start, m_end = _month_bounds(sel_year, sel_month)
             asof_m = min(asof_date, m_end)
@@ -1613,10 +1606,7 @@ if df_daily is not None and not df_daily.empty:
             base, used_years = _baseline_mtd(df_daily, sel_year, sel_month, asof_m, years_all)
             bench_txt = f"vs média MTD ({', '.join(map(str, used_years))})" if used_years else "vs MTD anos anteriores"
 
-            label = f"{_PT_MONTHS.get(sel_month)} {sel_year} (MTD até {asof_m.date()})"
-
             k_est = _forecast_month_end(df_daily, sel_year, sel_month, asof_m)
-            est_meta = f"Estimativa (fim do mês): escala linear do MTD ({k_est['days_elapsed']}/{k_est['days_in_month']} dias)."
 
             vol_d = _pct_change(k_real["vol"], base.get("vol", np.nan))
             mar_d = _pct_change(k_real["mar"], base.get("mar", np.nan))
@@ -1624,23 +1614,26 @@ if df_daily is not None and not df_daily.empty:
             cli_d = _pct_change(k_real["clientes_end"], base.get("clientes_end", np.nan))
             pp_d = _pp_change(k_real["conv2_end"], base.get("conv2_end", np.nan))
 
-            st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
-            meta = f"MTD até {asof_m.date()} (comparação 1..dia com anos anteriores). {est_meta}"
-            st.markdown(f"<div class='subtle'>{meta} Comparação {bench_txt}.</div>", unsafe_allow_html=True)
+            # Título: só "Abril 2026"
+            st.markdown(f"### {_PT_MONTHS_FULL.get(sel_month, _PT_MONTHS.get(sel_month, str(sel_month)))} {sel_year}")
+
+            # Subtítulo: só "Até <data>" se mês incompleto
+            if asof_m.normalize() < m_end.normalize():
+                st.markdown(f"<div class='subtle'>Até <b>{asof_m.date()}</b></div>", unsafe_allow_html=True)
 
             _kpi_grid([
                 (
-                    "Clientes c/ acesso (último)",
+                    "Clientes com acesso",
                     _with_estimativa(_fmt_int(k_real["clientes_end"]), _fmt_int(k_est.get("clientes_end"))),
                     _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>",
                 ),
                 (
-                    "% clientes com operações (último)",
+                    "Clientes com operações",
                     _with_estimativa(_fmt_pct(k_real["conv2_end"], 1), _fmt_pct(k_est.get("conv2_end"), 1)),
                     _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>",
                 ),
                 (
-                    "Operações",
+                    "Nº Operações",
                     _with_estimativa(_fmt_int_compact(k_real["ops"], 1), _fmt_int_compact(k_est.get("ops"), 1)),
                     _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>",
                 ),
@@ -1664,10 +1657,7 @@ if df_daily is not None and not df_daily.empty:
             base, used_years = _baseline_ytd(df_daily, sel_year, asof_y, years_all)
             bench_txt = f"vs média YTD ({', '.join(map(str, used_years))})" if used_years else "vs anos anteriores"
 
-            label = f"{sel_year} (YTD até {asof_y.date()})"
-
             k_est = _forecast_year_end(df_daily, sel_year, asof_y)
-            est_meta = f"Estimativa (fim do ano) via {k_est['share_mode']} (share usado: {k_est['share_used']:.1%})."
 
             vol_d = _pct_change(k_real["vol"], base.get("vol", np.nan))
             mar_d = _pct_change(k_real["mar"], base.get("mar", np.nan))
@@ -1675,23 +1665,26 @@ if df_daily is not None and not df_daily.empty:
             cli_d = _pct_change(k_real["clientes_end"], base.get("clientes_end", np.nan))
             pp_d = _pp_change(k_real["conv2_end"], base.get("conv2_end", np.nan))
 
-            st.markdown(f"### Posição — {label} <span class='badge'>{badge}</span>", unsafe_allow_html=True)
-            meta = f"YTD até {asof_y.date()} (comparação YTD com anos anteriores). {est_meta}"
-            st.markdown(f"<div class='subtle'>{meta} Comparação {bench_txt}.</div>", unsafe_allow_html=True)
+            st.markdown(f"### {sel_year}")
+
+            # Subtítulo: só "Até <data>" se ano incompleto
+            y_end = pd.Timestamp(year=sel_year, month=12, day=31).normalize()
+            if asof_y.normalize() < y_end:
+                st.markdown(f"<div class='subtle'>Até <b>{asof_y.date()}</b></div>", unsafe_allow_html=True)
 
             _kpi_grid([
                 (
-                    "Clientes c/ acesso (último)",
+                    "Clientes com acesso",
                     _with_estimativa(_fmt_int(k_real["clientes_end"]), _fmt_int(k_est.get("clientes_end"))),
                     _delta_html_pct(cli_d) + f" <span class='subtle'>{bench_txt}</span>",
                 ),
                 (
-                    "% clientes com operações (último)",
+                    "Clientes com operações",
                     _with_estimativa(_fmt_pct(k_real["conv2_end"], 1), _fmt_pct(k_est.get("conv2_end"), 1)),
                     _delta_html_pp(pp_d) + f" <span class='subtle'>{bench_txt}</span>",
                 ),
                 (
-                    "Operações",
+                    "Nº Operações",
                     _with_estimativa(_fmt_int_compact(k_real["ops"], 1), _fmt_int_compact(k_est.get("ops"), 1)),
                     _delta_html_pct(ops_d) + f" <span class='subtle'>{bench_txt}</span>",
                 ),
@@ -1709,10 +1702,10 @@ if df_daily is not None and not df_daily.empty:
 
         # =============================================================================
         # Resumo mensal (HTML) — se mês não acabou, usa forecast do mês
-        # + linha final YTD (Jan..mês corrente) comparando média mensal vs ano anterior
+        # + linha final YTD
         # =============================================================================
 
-        if st.session_state.show_month_table:
+        if SHOW_MONTH_TABLE:
             st.divider()
             st.markdown(f"### {sel_year} — Resumo mensal")
 
@@ -1777,9 +1770,9 @@ if df_daily is not None and not df_daily.empty:
                           <thead>
                             <tr>
                               <th>Mês</th>
-                              <th>Clientes c/ acesso</th>
-                              <th class='pctcell'>% clientes c/ operações</th>
-                              <th>Operações</th>
+                              <th>Clientes com acesso</th>
+                              <th class='pctcell'>Clientes com operações</th>
+                              <th>Nº de Operações</th>
                               <th>Volume</th>
                               <th>Margem</th>
                             </tr>
@@ -1846,15 +1839,11 @@ if df_daily is not None and not df_daily.empty:
                         </tr>
                         """
 
-                    # -------- Linha YTD (média Jan..mês corrente) --------
-                    # usa meses 1..curr_m do ano selecionado (com forecast no mês corrente se incompleto)
+                    # -------- Linha YTD (Jan..mês corrente) --------
                     df_ytdm = df_month.copy()
                     df_ytdm = _apply_forecast_to_month_row(df_ytdm, df_daily, sel_year, curr_m, asof_in_year)
                     df_ytdm = df_ytdm[df_ytdm["mes_num"].astype(int) <= curr_m].copy()
 
-                    # --- YTD correto:
-                    # clientes_acesso e conv_ops_s2 = valor do ÚLTIMO mês (mês corrente)
-                    # num_operacoes, volume_negocios, margem_liquida = SOMA Jan..mês corrente
                     df_ytdm = df_ytdm.sort_values("mes_num").copy()
                     last_row = df_ytdm.loc[df_ytdm["mes_num"].astype(int) == curr_m].tail(1)
 
@@ -1986,7 +1975,7 @@ if df_daily is not None and not df_daily.empty:
         # =============================================================================
 
         st.divider()
-        st.markdown("### Evolução mensal — comparação YoY")
+        st.markdown("### Evolução mensal")
 
         prev_year = sel_year - 1
 
@@ -2024,7 +2013,7 @@ if df_daily is not None and not df_daily.empty:
                 g1, g2, g3 = st.columns(3)
                 with g1:
                     st.markdown("<div class='panel'>", unsafe_allow_html=True)
-                    st.markdown("**Volume de negócios (YoY)**")
+                    st.markdown("**Volume de negócios**")
                     st.altair_chart(
                         _chart_yoy_line(
                             df_curr_y,
@@ -2045,7 +2034,7 @@ if df_daily is not None and not df_daily.empty:
 
                 with g2:
                     st.markdown("<div class='panel'>", unsafe_allow_html=True)
-                    st.markdown("**Nº de operações (YoY)**")
+                    st.markdown("**Nº de operações**")
                     st.altair_chart(
                         _chart_yoy_line(
                             df_curr_y,
@@ -2066,7 +2055,7 @@ if df_daily is not None and not df_daily.empty:
 
                 with g3:
                     st.markdown("<div class='panel'>", unsafe_allow_html=True)
-                    st.markdown("**Margem líquida (YoY)**")
+                    st.markdown("**Margem líquida**")
                     st.altair_chart(
                         _chart_yoy_line(
                             df_curr_y,
@@ -2091,7 +2080,6 @@ if df_daily is not None and not df_daily.empty:
 
         st.divider()
         st.markdown("### Detalhe diário")
-        st.markdown("<div class='subtle'>Indicadores do último registo comparados com o mesmo dia do ano anterior + charts (últimos 30 dias) + tabela (últimos 60). Útil para validar picos e o ritmo da estimativa.</div>", unsafe_allow_html=True)
 
         # dia de comparação: mesmo dia no ano anterior
         cmp_date = _same_day_year(int(last_date.year) - 1, int(last_date.month), int(last_date.day))
@@ -2199,7 +2187,3 @@ with st.container(key="upload_block"):
         if new_raw is not None:
             st.session_state.raw_report_bytes = new_raw
             st.rerun()
-
-st.caption(
-    "Dashboard: Posição (Mês/Ano) vs média anos anteriores + estimativa (sempre visível, lado-a-lado) + tema Light/Dark + resumo mensal (HTML) com barra laranja na percentagem + comparação YoY (Volume/Operações/Margem) com forecast tracejado até Dez + detalhe diário YoY vs mesmo dia do ano anterior."
-)
