@@ -1299,12 +1299,26 @@ def _chart_yoy_line(
     frames.append(d1)
 
     if df_a_forecast is not None and (not df_a_forecast.empty) and value_col in df_a_forecast.columns:
-        d1f = df_a_forecast[["mes_num", "mes", value_col]].copy()
-        d1f[value_col] = pd.to_numeric(d1f[value_col], errors="coerce")
-        d1f = d1f[d1f[value_col].notna()].copy()
-        d1f["Ano"] = str(year_a)
-        d1f["Segmento"] = "Forecast"
-        frames.append(d1f)
+            d1f = df_a_forecast[["mes_num", "mes", value_col]].copy()
+            d1f[value_col] = pd.to_numeric(d1f[value_col], errors="coerce")
+            d1f = d1f[d1f[value_col].notna()].copy()
+
+            # ---- FIX: evita gap entre Real e Forecast ----
+            # Se o forecast começar no mês seguinte, cria um ponto âncora no último mês "Real"
+            # com o mesmo valor, mas marcado como "Forecast" (assim a linha tracejada encosta).
+            if len(d1) and len(d1f):
+                last_real_m = int(pd.to_numeric(d1["mes_num"], errors="coerce").max())
+                first_fc_m = int(pd.to_numeric(d1f["mes_num"], errors="coerce").min())
+                if first_fc_m > last_real_m:
+                    anchor = d1.loc[d1["mes_num"].astype(int) == last_real_m, ["mes_num", "mes", value_col]].tail(1).copy()
+                    if not anchor.empty:
+                        anchor["Ano"] = str(year_a)
+                        anchor["Segmento"] = "Forecast"
+                        d1f = pd.concat([anchor, d1f], ignore_index=True)
+
+            d1f["Ano"] = str(year_a)
+            d1f["Segmento"] = "Forecast"
+            frames.append(d1f)
 
     if df_b is not None and (not df_b.empty) and value_col in df_b.columns and year_b is not None:
         d2 = df_b[["mes_num", "mes", value_col]].copy()
@@ -1838,20 +1852,77 @@ if df_daily is not None and not df_daily.empty:
                     df_ytdm = _apply_forecast_to_month_row(df_ytdm, df_daily, sel_year, curr_m, asof_in_year)
                     df_ytdm = df_ytdm[df_ytdm["mes_num"].astype(int) <= curr_m].copy()
 
-                    ytd_cli = float(pd.to_numeric(df_ytdm.get("clientes_acesso"), errors="coerce").mean()) if "clientes_acesso" in df_ytdm.columns else np.nan
-                    ytd_ado = float(pd.to_numeric(df_ytdm.get("conv_ops_s2"), errors="coerce").mean()) if "conv_ops_s2" in df_ytdm.columns else np.nan
-                    ytd_ops = float(pd.to_numeric(df_ytdm.get("num_operacoes"), errors="coerce").mean()) if "num_operacoes" in df_ytdm.columns else np.nan
-                    ytd_vol = float(pd.to_numeric(df_ytdm.get("volume_negocios"), errors="coerce").mean()) if "volume_negocios" in df_ytdm.columns else np.nan
-                    ytd_mar = float(pd.to_numeric(df_ytdm.get("margem_liquida"), errors="coerce").mean()) if "margem_liquida" in df_ytdm.columns else np.nan
+                    # --- YTD correto:
+                    # clientes_acesso e conv_ops_s2 = valor do ÚLTIMO mês (mês corrente)
+                    # num_operacoes, volume_negocios, margem_liquida = SOMA Jan..mês corrente
+                    df_ytdm = df_ytdm.sort_values("mes_num").copy()
+                    last_row = df_ytdm.loc[df_ytdm["mes_num"].astype(int) == curr_m].tail(1)
+
+                    ytd_cli = (
+                        float(pd.to_numeric(last_row["clientes_acesso"], errors="coerce").iloc[0])
+                        if (not last_row.empty and "clientes_acesso" in last_row.columns)
+                        else np.nan
+                    )
+
+                    ytd_ado = (
+                        float(pd.to_numeric(last_row["conv_ops_s2"], errors="coerce").iloc[0])
+                        if (not last_row.empty and "conv_ops_s2" in last_row.columns)
+                        else np.nan
+                    )
+
+                    ytd_ops = (
+                        float(pd.to_numeric(df_ytdm.get("num_operacoes"), errors="coerce").sum())
+                        if ("num_operacoes" in df_ytdm.columns)
+                        else np.nan
+                    )
+
+                    ytd_vol = (
+                        float(pd.to_numeric(df_ytdm.get("volume_negocios"), errors="coerce").sum())
+                        if ("volume_negocios" in df_ytdm.columns)
+                        else np.nan
+                    )
+
+                    ytd_mar = (
+                        float(pd.to_numeric(df_ytdm.get("margem_liquida"), errors="coerce").sum())
+                        if ("margem_liquida" in df_ytdm.columns)
+                        else np.nan
+                    )
 
                     if has_ly:
                         df_lym = build_monthly_year(df_daily, compare_year)
                         df_lym = df_lym[df_lym["mes_num"].astype(int) <= curr_m].copy() if not df_lym.empty else pd.DataFrame()
-                        ly_cli = float(pd.to_numeric(df_lym.get("clientes_acesso"), errors="coerce").mean()) if (df_lym is not None and not df_lym.empty and "clientes_acesso" in df_lym.columns) else np.nan
-                        ly_ado = float(pd.to_numeric(df_lym.get("conv_ops_s2"), errors="coerce").mean()) if (df_lym is not None and not df_lym.empty and "conv_ops_s2" in df_lym.columns) else np.nan
-                        ly_ops = float(pd.to_numeric(df_lym.get("num_operacoes"), errors="coerce").mean()) if (df_lym is not None and not df_lym.empty and "num_operacoes" in df_lym.columns) else np.nan
-                        ly_vol = float(pd.to_numeric(df_lym.get("volume_negocios"), errors="coerce").mean()) if (df_lym is not None and not df_lym.empty and "volume_negocios" in df_lym.columns) else np.nan
-                        ly_mar = float(pd.to_numeric(df_lym.get("margem_liquida"), errors="coerce").mean()) if (df_lym is not None and not df_lym.empty and "margem_liquida" in df_lym.columns) else np.nan
+                        df_lym = df_lym.sort_values("mes_num").copy() if (df_lym is not None and not df_lym.empty) else df_lym
+                        last_row_ly = df_lym.loc[df_lym["mes_num"].astype(int) == curr_m].tail(1) if (df_lym is not None and not df_lym.empty) else pd.DataFrame()
+
+                        ly_cli = (
+                            float(pd.to_numeric(last_row_ly["clientes_acesso"], errors="coerce").iloc[0])
+                            if (not last_row_ly.empty and "clientes_acesso" in last_row_ly.columns)
+                            else np.nan
+                        )
+
+                        ly_ado = (
+                            float(pd.to_numeric(last_row_ly["conv_ops_s2"], errors="coerce").iloc[0])
+                            if (not last_row_ly.empty and "conv_ops_s2" in last_row_ly.columns)
+                            else np.nan
+                        )
+
+                        ly_ops = (
+                            float(pd.to_numeric(df_lym.get("num_operacoes"), errors="coerce").sum())
+                            if (df_lym is not None and not df_lym.empty and "num_operacoes" in df_lym.columns)
+                            else np.nan
+                        )
+
+                        ly_vol = (
+                            float(pd.to_numeric(df_lym.get("volume_negocios"), errors="coerce").sum())
+                            if (df_lym is not None and not df_lym.empty and "volume_negocios" in df_lym.columns)
+                            else np.nan
+                        )
+
+                        ly_mar = (
+                            float(pd.to_numeric(df_lym.get("margem_liquida"), errors="coerce").sum())
+                            if (df_lym is not None and not df_lym.empty and "margem_liquida" in df_lym.columns)
+                            else np.nan
+                        )
                     else:
                         ly_cli = ly_ado = ly_ops = ly_vol = ly_mar = np.nan
 
@@ -1881,18 +1952,23 @@ if df_daily is not None and not df_daily.empty:
                         p = 0.0
                     w = round(p * 100, 1)
 
-                    ytd_label = f"YTD (Jan–{_PT_MONTHS.get(curr_m)}): média mensal"
+                    ytd_label = f"{sel_year}"
                     body += f"""
                     <tr class='ytd-row'>
-                      <td><b>{ytd_label}</b></td>
-                      <td>{_fmt_int(ytd_cli)}{('<span class="arrow '+a_cli_cls+'">'+a_cli_txt+'</span>') if a_cli_txt else ''}</td>
-                      <td class='pctcell'>
+                    <td><b>{ytd_label}</b></td>
+
+                    <td><b>{_fmt_int(ytd_cli)}{('<span class="arrow '+a_cli_cls+'">'+a_cli_txt+'</span>') if a_cli_txt else ''}</b></td>
+
+                    <td class='pctcell'>
                         <span class='bar'><span class='fill' style='width:{w}%' ></span></span>
-                        <span class='pcttxt'>{_fmt_pct(ytd_ado, 1)}{('<span class="arrow '+a_ado_cls+'">'+a_ado_txt+'</span>') if a_ado_txt else ''}</span>
-                      </td>
-                      <td>{_fmt_int_compact(ytd_ops, 1)}{('<span class="arrow '+a_ops_cls+'">'+a_ops_txt+'</span>') if a_ops_txt else ''}</td>
-                      <td>{_fmt_eur_compact(ytd_vol, 1)}{('<span class="arrow '+a_vol_cls+'">'+a_vol_txt+'</span>') if a_vol_txt else ''}</td>
-                      <td>{_fmt_eur_compact(ytd_mar, 1)}{('<span class="arrow '+a_mar_cls+'">'+a_mar_txt+'</span>') if a_mar_txt else ''}</td>
+                        <span class='pcttxt'><b>{_fmt_pct(ytd_ado, 1)}{('<span class="arrow '+a_ado_cls+'">'+a_ado_txt+'</span>') if a_ado_txt else ''}</b></span>
+                    </td>
+
+                    <td><b>{_fmt_int_compact(ytd_ops, 1)}{('<span class="arrow '+a_ops_cls+'">'+a_ops_txt+'</span>') if a_ops_txt else ''}</b></td>
+
+                    <td><b>{_fmt_eur_compact(ytd_vol, 1)}{('<span class="arrow '+a_vol_cls+'">'+a_vol_txt+'</span>') if a_vol_txt else ''}</b></td>
+
+                    <td><b>{_fmt_eur_compact(ytd_mar, 1)}{('<span class="arrow '+a_mar_cls+'">'+a_mar_txt+'</span>') if a_mar_txt else ''}</b></td>
                     </tr>
                     """
 
