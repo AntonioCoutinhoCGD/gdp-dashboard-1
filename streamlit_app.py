@@ -1527,31 +1527,12 @@ if df_daily is not None and not df_daily.empty:
         st.warning("Sem anos válidos no ficheiro.")
     else:
         # =============================================================================
-        # Controlos (1 quadro): Mês/Ano
+        # Controlos (1 quadro): Mês/Ano  ✅ FIX keys + sync state
         # =============================================================================
 
         st.markdown("<div class='ctrl'>", unsafe_allow_html=True)
 
-        r1, r2, r3 = st.columns([1.15, 1.05, 2.35])
-
-        with r1:
-            st.session_state.pos_scope = st.radio(
-                "Posição",
-                ["Mês", "Ano"],
-                horizontal=True,
-                index=["Mês", "Ano"].index(st.session_state.pos_scope) if st.session_state.pos_scope in ("Mês", "Ano") else 0,
-            )
-
-        with r2:
-            st.session_state.sel_year = st.selectbox(
-                "Ano",
-                years_all,
-                index=years_all.index(st.session_state.sel_year) if st.session_state.sel_year in years_all else len(years_all) - 1,
-            )
-
-        sel_year = int(st.session_state.sel_year)
-        pos_scope = st.session_state.pos_scope
-
+        # ---- helpers de datas (mantém os teus) ----
         def _max_date_in_month(year: int, month: int) -> pd.Timestamp:
             m0, m1 = _month_bounds(year, month)
             dfx = df_daily[(df_daily["data"] >= m0) & (df_daily["data"] <= m1)]
@@ -1565,37 +1546,99 @@ if df_daily is not None and not df_daily.empty:
                 return last_date
             return dfx["data"].max().normalize()
 
+        def _months_in_year(year: int) -> List[int]:
+            ms = sorted(df_daily[df_daily["data"].dt.year == year]["data"].dt.month.unique().tolist())
+            return ms if ms else list(range(1, 13))
+
+        # ---- init defaults só uma vez ----
+        if "pos_scope" not in st.session_state or st.session_state.pos_scope not in ("Mês", "Ano"):
+            st.session_state.pos_scope = "Mês"
+        if "sel_year" not in st.session_state or st.session_state.sel_year is None:
+            st.session_state.sel_year = last_year
+        if "sel_month" not in st.session_state or st.session_state.sel_month is None:
+            st.session_state.sel_month = last_month
+        if "asof_date" not in st.session_state or st.session_state.asof_date is None:
+            st.session_state.asof_date = last_date.date()
+
+        # ---- callbacks (sincronização) ----
+        def _on_year_change():
+            y = int(st.session_state.sel_year)
+            # se estiver em Mês, garante que sel_month é válido para o ano
+            if st.session_state.pos_scope == "Mês":
+                ms = _months_in_year(y)
+                if int(st.session_state.sel_month) not in ms:
+                    st.session_state.sel_month = ms[-1]
+                st.session_state.asof_date = _max_date_in_month(y, int(st.session_state.sel_month)).date()
+            else:
+                st.session_state.asof_date = _max_date_in_year(y).date()
+
+        def _on_scope_change():
+            y = int(st.session_state.sel_year)
+            if st.session_state.pos_scope == "Ano":
+                st.session_state.asof_date = _max_date_in_year(y).date()
+            else:
+                ms = _months_in_year(y)
+                if int(st.session_state.sel_month) not in ms:
+                    st.session_state.sel_month = ms[-1]
+                st.session_state.asof_date = _max_date_in_month(y, int(st.session_state.sel_month)).date()
+
+        def _on_month_change():
+            y = int(st.session_state.sel_year)
+            m = int(st.session_state.sel_month)
+            st.session_state.asof_date = _max_date_in_month(y, m).date()
+
+        # ---- layout ----
+        r1, r2, r3 = st.columns([1.15, 1.05, 2.35])
+
+        with r1:
+            st.radio(
+                "Posição",
+                ["Mês", "Ano"],
+                horizontal=True,
+                key="pos_scope",
+                on_change=_on_scope_change,
+            )
+
+        with r2:
+            st.selectbox(
+                "Ano",
+                years_all,
+                key="sel_year",
+                on_change=_on_year_change,
+            )
+
+        # valores atuais (sempre ler do state após widgets)
+        pos_scope = st.session_state.pos_scope
+        sel_year = int(st.session_state.sel_year)
+
         if pos_scope == "Mês":
             with r3:
-                months_in_year = sorted(df_daily[df_daily["data"].dt.year == sel_year]["data"].dt.month.unique().tolist())
-                if len(months_in_year) == 0:
-                    months_in_year = list(range(1, 13))
-                default_month = last_month if sel_year == last_year else (months_in_year[-1] if months_in_year else 12)
-                if default_month not in months_in_year:
-                    default_month = months_in_year[-1]
+                ms = _months_in_year(sel_year)
+                # garante mês válido antes de desenhar selectbox (evita index mismatch)
+                if int(st.session_state.sel_month) not in ms:
+                    st.session_state.sel_month = ms[-1]
 
-                st.session_state.sel_month = st.selectbox(
+                st.selectbox(
                     "Mês",
-                    months_in_year,
+                    ms,
                     format_func=lambda m: f"{_PT_MONTHS.get(int(m), str(m))}",
-                    index=months_in_year.index(st.session_state.sel_month) if st.session_state.sel_month in months_in_year else months_in_year.index(default_month),
+                    key="sel_month",
+                    on_change=_on_month_change,
                 )
 
-            sel_month = int(st.session_state.sel_month)
-            st.session_state.asof_date = _max_date_in_month(sel_year, sel_month).date()
-
-        else:  # Ano
+        else:
             with r3:
-                st.markdown(f"<div class='subtle'>Até: <b>{_max_date_in_year(sel_year).date()}</b></div>", unsafe_allow_html=True)
-
-            st.session_state.asof_date = _max_date_in_year(sel_year).date()
+                st.markdown(
+                    f"<div class='subtle'>Até: <b>{_max_date_in_year(sel_year).date()}</b></div>",
+                    unsafe_allow_html=True,
+                )
 
         st.markdown(f"<div class='subtle'>Última data no ficheiro: <b>{last_date.date()}</b></div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
+        # normaliza em variáveis locais (sem forçar int() à toa quando está em Ano)
         asof_date = pd.Timestamp(st.session_state.asof_date).normalize()
-        sel_year = int(st.session_state.sel_year)
-        sel_month = int(st.session_state.sel_month)
+        sel_month = int(st.session_state.sel_month) if st.session_state.pos_scope == "Mês" else int(last_month)
 
         st.divider()
 
