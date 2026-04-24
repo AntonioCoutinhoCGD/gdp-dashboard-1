@@ -771,7 +771,14 @@ def _apply_theme(theme: str):
         vertical-align: middle;
         margin-right: 10px;
       }}
-      .fill {{ height: 100%; background: var(--c-orange); border-radius: 999px; }}
+      .fill {{
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: var(--c-orange);
+        border-radius: 999px;
+        transition: width 2.0s ease;   /* 👈 animação */
+      }}
       .pcttxt {{ color: var(--c-subtle); font-size: 0.82rem; vertical-align: middle; display: inline-block; }}
 
       /* Linha YTD no resumo mensal */
@@ -1709,6 +1716,17 @@ if df_daily is not None and not df_daily.empty:
             st.divider()
             st.markdown(f"### {sel_year} — Resumo mensal")
 
+            # --- aviso de mês estimado (se o mês corrente ainda não terminou) ---
+            asof_in_year = _max_date_in_year(sel_year)
+            curr_m = int(asof_in_year.month)
+            is_month_estimated = not _is_month_complete(sel_year, curr_m, asof_in_year)
+
+            if is_month_estimated:
+                st.markdown(
+                    f"<div class='subtle'>*Estimando o mês de <b>{_PT_MONTHS_FULL.get(curr_m, _PT_MONTHS.get(curr_m, str(curr_m)))}</b></div>",
+                    unsafe_allow_html=True,
+                )
+
             compare_year = sel_year - 1
             has_ly = compare_year in years_all
 
@@ -1717,9 +1735,6 @@ if df_daily is not None and not df_daily.empty:
                 st.info("Sem dados para o ano selecionado.")
             else:
                 # mês corrente (no ano selecionado): último dia disponível
-                asof_in_year = _max_date_in_year(sel_year)
-                curr_m = int(asof_in_year.month)
-
                 df_month = _apply_forecast_to_month_row(df_month, df_daily, sel_year, curr_m, asof_in_year)
 
                 base_num = df_month[[c for c in ["clientes_acesso", "conv_ops_s2", "num_operacoes", "volume_negocios", "margem_liquida"] if c in df_month.columns]].copy()
@@ -1731,6 +1746,10 @@ if df_daily is not None and not df_daily.empty:
                 else:
                     max_month_with_data = int(dfm["mes_num"].max())
                     dfm = dfm[dfm["mes_num"] <= max_month_with_data].copy()
+                    # flag do mês estimado (só o mês corrente e só se mês não completo)
+                    dfm["is_est"] = False
+                    if is_month_estimated:
+                        dfm.loc[dfm["mes_num"].astype(int) == curr_m, "is_est"] = True
 
                     if has_ly:
                         df_ly = build_monthly_year(df_daily, compare_year)
@@ -1784,6 +1803,8 @@ if df_daily is not None and not df_daily.empty:
                     for _, r in dfm.iterrows():
                         mnum = int(r.get("mes_num"))
                         mes = _PT_MONTHS.get(mnum, str(mnum))
+                        if bool(r.get("is_est", False)):
+                            mes = f"{mes}<span class='subtle'>*</span>"
 
                         cli = r.get("clientes_acesso")
                         ado = r.get("conv_ops_s2")
