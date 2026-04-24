@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from functools import lru_cache
 import urllib.request
-
+import hmac
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -69,6 +69,61 @@ except Exception:
         page_icon="🏦",
         layout="wide",
     )
+# =============================================================================
+# AUTENTICAÇÃO (login simples por username/password via Streamlit Secrets)
+# Espera-se existir em .streamlit/secrets.toml:
+# [auth]
+# username = "..."
+# password = "..."
+# =============================================================================
+
+AUTH_USER = st.secrets["auth"].get("username", "")
+AUTH_PASS = st.secrets["auth"].get("password", "")
+
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
+def _do_login(user: str, pwd: str) -> bool:
+    if user == AUTH_USER and pwd == AUTH_PASS:
+        st.session_state.auth_ok = True
+        st.session_state.auth_user = user
+        return True
+    return False
+
+def _do_logout():
+    st.session_state.auth_ok = False
+    st.session_state.auth_user = None
+
+# --- Gate de acesso ---
+if not st.session_state.auth_ok:
+    st.title("Plataforma Cambial — Login")
+    with st.form("login_form", clear_on_submit=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            user_input = st.text_input("Utilizador", autocomplete="username")
+        with c2:
+            pass_input = st.text_input("Palavra‑passe", type="password", autocomplete="current-password")
+
+        ok = st.form_submit_button("Entrar")
+        if ok:
+            if _do_login(user_input, pass_input):
+                st.success("Autenticado com sucesso. A carregar…")
+                st.rerun()
+            else:
+                st.error("Credenciais inválidas. Tenta novamente.")
+
+    st.stop()
+
+# --- Opcional: barra discreta de sessão + logout ---
+topc1, topc2 = st.columns([0.84, 0.16])
+with topc1:
+    st.caption(f"✅ Sessão iniciada como **{st.session_state.auth_user}**")
+with topc2:
+    if st.button("Terminar sessão", use_container_width=True):
+        _do_logout()
+        st.rerun()
 
 
 # =============================================================================
