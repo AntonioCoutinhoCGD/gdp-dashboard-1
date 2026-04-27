@@ -1566,6 +1566,12 @@ if df_daily is not None and not df_daily.empty:
         # =============================================================================
         st.divider()
         st.markdown("### Resumo anual")
+        years_back = st.selectbox(
+            "Número de anos a mostrar",
+            options=[5, 7, 10, 15, len(years_all)],
+            index=0,
+            format_func=lambda x: "Todos" if x == len(years_all) else str(x),
+        )
         include_year_forecast = st.toggle(
             f"Incluir estimativa {int(last_date.year)}",
             value=False,
@@ -1620,10 +1626,11 @@ if df_daily is not None and not df_daily.empty:
         df_years_all = pd.DataFrame(year_rows)
         year_map = {int(r["ano"]): r for _, r in df_years_all.iterrows()}
 
-        # --- últimos 5 anos, do mais antigo para o mais recente ---
-        years_display = sorted(years_all)[-5:]  # garante que são os últimos 5 anos
+        # --- últimos N anos, do mais antigo para o mais recente ---
+        years_display = sorted(years_all)[-years_back:]
         df_display = df_years_all[df_years_all["ano"].isin(years_display)].copy()
-        df_display = df_display
+        df_display = df_display.sort_values("ano", ascending=True).reset_index(drop=True)
+        
 
         # --- helpers de setas (reutiliza os mesmos do mensal) ---
         def _arrow_pct(delta):
