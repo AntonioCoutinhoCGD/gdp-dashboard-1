@@ -16,6 +16,10 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+PERSISTENT_CSV = DATA_DIR / "report_cache.csv"
+
 # =============================================================================
 # LOGO (CGD)
 # =============================================================================
@@ -1042,6 +1046,10 @@ with c_title:
 # Carregar dados — usa session_state para persistência (FIX 2)
 # =============================================================================
 raw = st.session_state.raw_report_bytes
+
+if raw is None and PERSISTENT_CSV.exists():
+    raw = PERSISTENT_CSV.read_bytes()
+    st.session_state.raw_report_bytes = raw
 df_daily = None
 _load_err = None
 
@@ -1660,6 +1668,7 @@ with st.container(key="upload_block"):
 
         if new_raw is not None:
             st.session_state.raw_report_bytes = new_raw
+            PERSISTENT_CSV.write_bytes(new_raw)
             st.rerun()
 
         if st.session_state.raw_report_bytes is not None:
