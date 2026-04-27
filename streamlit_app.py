@@ -1620,10 +1620,10 @@ if df_daily is not None and not df_daily.empty:
         df_years_all = pd.DataFrame(year_rows)
         year_map = {int(r["ano"]): r for _, r in df_years_all.iterrows()}
 
-        # --- últimos 5 anos, do mais recente para o mais antigo ---
-        years_display = sorted(years_all, reverse=True)[:5]
+        # --- últimos 5 anos, do mais antigo para o mais recente ---
+        years_display = sorted(years_all)[-5:]  # garante que são os últimos 5 anos
         df_display = df_years_all[df_years_all["ano"].isin(years_display)].copy()
-        df_display = df_display.sort_values("ano", ascending=False).reset_index(drop=True)
+        df_display = df_display
 
         # --- helpers de setas (reutiliza os mesmos do mensal) ---
         def _arrow_pct(delta):
