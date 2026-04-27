@@ -1301,7 +1301,7 @@ def _apply_forecast_to_month_row(df_month: pd.DataFrame, df_daily: pd.DataFrame,
     return out
 
 
-def _forecast_remaining_months(df_daily: pd.DataFrame, sel_year: int, asof: pd.Timestamp, metric_col: str) -> pd.DataFrame:
+def _forecast_remaining_months(df_daily: pd.DataFrame, sel_year: int, asof: pd.Timestamp, metric_col: str, include_current_month: bool = False) -> pd.DataFrame:
     """Forecast sazonal por month-shares históricos.
     Produz meses restantes (m+1..12) com valores estimados.
     """
@@ -1332,6 +1332,13 @@ def _forecast_remaining_months(df_daily: pd.DataFrame, sel_year: int, asof: pd.T
         return pd.DataFrame(columns=["mes_num", "mes", metric_col])
 
     rows = []
+
+    # ✅ inclui mês corrente (já com forecast aplicado em df_m) como 1º ponto tracejado
+    if include_current_month and (not _is_month_complete(sel_year, curr_m, asof)):
+        v_curr = pd.to_numeric(df_m.loc[df_m["mes_num"].astype(int) == curr_m, metric_col], errors="coerce")
+        v_curr = float(v_curr.sum()) if v_curr.notna().any() else np.nan
+        rows.append({"mes_num": curr_m, "mes": _PT_MONTHS.get(curr_m, str(curr_m)), metric_col: v_curr})
+
     for m in range(curr_m + 1, 13):
         v = residual * (shares[m] / rem_share)
         rows.append({"mes_num": m, "mes": _PT_MONTHS.get(m, str(m)), metric_col: float(v)})
@@ -1503,7 +1510,8 @@ if "asof_date" not in st.session_state:
     st.session_state.asof_date = None
 if "raw_report_bytes" not in st.session_state:
     st.session_state.raw_report_bytes = None
-
+if "include_curr_month_summary" not in st.session_state:
+    st.session_state.include_curr_month_summary = False  # default: EXCLUI mês corrente no "Resumo mensal"
 # detalhe diário sempre ligado
 st.session_state.show_daily_detail = True
 
@@ -1817,7 +1825,23 @@ if df_daily is not None and not df_daily.empty:
             # --- aviso de mês estimado (se o mês corrente ainda não terminou) ---
             asof_in_year = _max_date_in_year(sel_year)
             curr_m = int(asof_in_year.month)
-            is_month_estimated = not _is_month_complete(sel_year, curr_m, asof_in_year)
+
+            # "Ano atual" no ficheiro (o ano do último registo)
+            is_current_year_in_file = (sel_year == int(last_date.year))
+
+            # mês corrente (do último registo) está incompleto?
+            month_in_progress = (not _is_month_complete(sel_year, curr_m, asof_in_year))
+
+            # Toggle: incluir/excluir mês corrente (default = EXCLUI)
+            include_curr_month = st.toggle(
+                f"Incluir mês corrente ({_PT_MONTHS_FULL.get(curr_m, _PT_MONTHS.get(curr_m, str(curr_m)))})",
+                value=False,
+                key="include_curr_month_summary",
+                disabled=not is_current_year_in_file,  # em anos passados, deixa sempre incluído
+            )
+
+            # Só faz sentido "estimativa" se for ano atual e você escolheu incluir o mês corrente e o mês ainda não terminou
+            is_month_estimated = bool(is_current_year_in_file and include_curr_month and month_in_progress)
 
             if is_month_estimated:
                 st.markdown(
@@ -1833,7 +1857,14 @@ if df_daily is not None and not df_daily.empty:
                 st.info("Sem dados para o ano selecionado.")
             else:
                 # mês corrente (no ano selecionado): último dia disponível
-                df_month = _apply_forecast_to_month_row(df_month, df_daily, sel_year, curr_m, asof_in_year)
+                if is_month_estimated:
+                    df_month = _apply_forecast_to_month_row(
+                        df_month,
+                        df_daily,
+                        sel_year,
+                        curr_m,
+                        asof_in_year,
+                    )
 
                 base_num = df_month[[c for c in ["clientes_acesso", "conv_ops_s2", "num_operacoes", "volume_negocios", "margem_liquida"] if c in df_month.columns]].copy()
                 keep_any = base_num.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
@@ -1843,11 +1874,24 @@ if df_daily is not None and not df_daily.empty:
                     st.info("Sem dados numéricos no ano selecionado.")
                 else:
                     max_month_with_data = int(dfm["mes_num"].max())
-                    dfm = dfm[dfm["mes_num"] <= max_month_with_data].copy()
-                    # flag do mês estimado (só o mês corrente e só se mês não completo)
-                    dfm["is_est"] = False
-                    if is_month_estimated:
-                        dfm.loc[dfm["mes_num"].astype(int) == curr_m, "is_est"] = True
+
+                    # cutoff padrão: até ao último mês com dados
+                    cutoff_month = max_month_with_data
+
+                    # Se for ano atual no ficheiro e o toggle estiver OFF, exclui mês corrente (o mês do último registo)
+                    if is_current_year_in_file and (not include_curr_month):
+                        cutoff_month = min(cutoff_month, curr_m - 1)
+
+                    # Se ao excluir ficar sem meses (ex.: janeiro ainda a meio), mostra mensagem e não tenta render tabela
+                    if cutoff_month < 1:
+                        st.info("Mês corrente excluído — ainda não há meses completos para mostrar no resumo mensal.")
+                    else:
+                        dfm = dfm[dfm["mes_num"].astype(int) <= int(cutoff_month)].copy()
+
+                        # flag do mês estimado (só aparece se estamos a incluir o mês corrente e ele está em estimativa)
+                        dfm["is_est"] = False
+                        if is_month_estimated:
+                            dfm.loc[dfm["mes_num"].astype(int) == curr_m, "is_est"] = True
 
                     if has_ly:
                         df_ly = build_monthly_year(df_daily, compare_year)
@@ -1959,13 +2003,17 @@ if df_daily is not None and not df_daily.empty:
                         """
 
                     # -------- Linha YTD (Jan..mês corrente) --------
+                    ytd_end_m = int(cutoff_month) if (is_current_year_in_file and (not include_curr_month)) else int(curr_m)
+
                     df_ytdm = df_month.copy()
-                    df_ytdm = _apply_forecast_to_month_row(df_ytdm, df_daily, sel_year, curr_m, asof_in_year)
-                    df_ytdm = df_ytdm[df_ytdm["mes_num"].astype(int) <= curr_m].copy()
+                    # só aplica forecast ao YTD se estivermos a incluir o mês corrente e ele estiver em estimativa
+                    if is_month_estimated:
+                        df_ytdm = _apply_forecast_to_month_row(df_ytdm, df_daily, sel_year, curr_m, asof_in_year)
 
+                    df_ytdm = df_ytdm[df_ytdm["mes_num"].astype(int) <= ytd_end_m].copy()
                     df_ytdm = df_ytdm.sort_values("mes_num").copy()
-                    last_row = df_ytdm.loc[df_ytdm["mes_num"].astype(int) == curr_m].tail(1)
 
+                    last_row = df_ytdm.loc[df_ytdm["mes_num"].astype(int) == ytd_end_m].tail(1)
                     ytd_cli = (
                         float(pd.to_numeric(last_row["clientes_acesso"], errors="coerce").iloc[0])
                         if (not last_row.empty and "clientes_acesso" in last_row.columns)
@@ -1998,9 +2046,9 @@ if df_daily is not None and not df_daily.empty:
 
                     if has_ly:
                         df_lym = build_monthly_year(df_daily, compare_year)
-                        df_lym = df_lym[df_lym["mes_num"].astype(int) <= curr_m].copy() if not df_lym.empty else pd.DataFrame()
+                        df_lym = df_lym[df_lym["mes_num"].astype(int) <= ytd_end_m].copy() if not df_lym.empty else pd.DataFrame()
                         df_lym = df_lym.sort_values("mes_num").copy() if (df_lym is not None and not df_lym.empty) else df_lym
-                        last_row_ly = df_lym.loc[df_lym["mes_num"].astype(int) == curr_m].tail(1) if (df_lym is not None and not df_lym.empty) else pd.DataFrame()
+                        last_row_ly = df_lym.loc[df_lym["mes_num"].astype(int) == ytd_end_m].tail(1) if (df_lym is not None and not df_lym.empty) else pd.DataFrame()
 
                         ly_cli = (
                             float(pd.to_numeric(last_row_ly["clientes_acesso"], errors="coerce").iloc[0])
@@ -2099,18 +2147,31 @@ if df_daily is not None and not df_daily.empty:
         prev_year = sel_year - 1
 
         df_curr_y = build_monthly_year(df_daily, sel_year)
+        asof_in_year = _max_date_in_year(sel_year)
+        curr_m = int(asof_in_year.month)
+
+        # verifica se o mês corrente está incompleto
+        month_in_progress = not _is_month_complete(sel_year, curr_m, asof_in_year)
+
+        # se mês corrente está incompleto:
+        # - remove-o do df_curr_y (linha continua)
+        # - passa-o para forecast (linha tracejada)
+        if month_in_progress:
+            df_curr_y = df_curr_y[df_curr_y["mes_num"].astype(int) < curr_m].copy()
         df_prev_y = build_monthly_year(df_daily, prev_year) if prev_year in years_all else pd.DataFrame()
 
         if df_curr_y is None or df_curr_y.empty:
             st.info("Sem dados para gráficos.")
         else:
-            # ajusta mês corrente (se incompleto) do ano selecionado para forecast
-            asof_in_year = _max_date_in_year(sel_year)
-            df_curr_y = _apply_forecast_to_month_row(df_curr_y, df_daily, sel_year, int(asof_in_year.month), asof_in_year)
-
             base_num = df_curr_y[[c for c in ["num_operacoes", "volume_negocios", "margem_liquida"] if c in df_curr_y.columns]].copy()
             keep_any = base_num.apply(pd.to_numeric, errors="coerce").notna().any(axis=1)
             df_curr_y = df_curr_y.loc[keep_any].copy()
+            # --- mês corrente: se estiver incompleto, não pode ficar no REAL (linha contínua) ---
+            curr_m = int(asof_in_year.month)
+            month_in_progress = not _is_month_complete(sel_year, curr_m, asof_in_year)
+
+            if month_in_progress:
+                df_curr_y = df_curr_y[df_curr_y["mes_num"].astype(int) < curr_m].copy()
 
             if df_curr_y.empty:
                 st.info("Sem dados para gráficos.")
@@ -2124,10 +2185,19 @@ if df_daily is not None and not df_daily.empty:
                 curr_m = int(asof_in_year.month)
                 _, y_end = _month_bounds(sel_year, 12)
                 year_complete = (asof_in_year.normalize() >= y_end)
+                month_in_progress = not _is_month_complete(sel_year, curr_m, asof_in_year)
 
-                fc_vol = _forecast_remaining_months(df_daily, sel_year, asof_in_year, "volume_negocios") if not year_complete else pd.DataFrame()
-                fc_ops = _forecast_remaining_months(df_daily, sel_year, asof_in_year, "num_operacoes") if not year_complete else pd.DataFrame()
-                fc_mar = _forecast_remaining_months(df_daily, sel_year, asof_in_year, "margem_liquida") if not year_complete else pd.DataFrame()
+                fc_vol = _forecast_remaining_months(
+                    df_daily, sel_year, asof_in_year, "volume_negocios", include_current_month=True
+                )
+
+                fc_ops = _forecast_remaining_months(
+                    df_daily, sel_year, asof_in_year, "num_operacoes", include_current_month=True
+                )
+
+                fc_mar = _forecast_remaining_months(
+                    df_daily, sel_year, asof_in_year, "margem_liquida", include_current_month=True
+                )
 
                 g1, g2, g3 = st.columns(3)
                 with g1:
