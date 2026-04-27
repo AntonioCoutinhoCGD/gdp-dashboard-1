@@ -1012,6 +1012,9 @@ if "raw_report_bytes" not in st.session_state:
     st.session_state.raw_report_bytes = None
 if "include_curr_month_summary" not in st.session_state:
     st.session_state.include_curr_month_summary = False
+if "include_year_forecast" not in st.session_state:
+    st.session_state.include_year_forecast = False
+
 
 st.session_state.show_daily_detail = True
 
@@ -1179,7 +1182,8 @@ if df_daily is not None and not df_daily.empty:
         if pos_scope == "Mês":
             with r3:
                 ms = _months_in_year(sel_year)
-                if int(st.session_state.sel_month) not in ms:
+                curr_month = st.session_state.get("sel_month")
+                if curr_month is None or int(curr_month) not in ms:
                     st.session_state.sel_month = ms[-1]
                 st.selectbox("Mês", ms, format_func=lambda m: f"{_PT_MONTHS.get(int(m), str(m))}", key="sel_month", on_change=_on_month_change)
         else:
@@ -1557,7 +1561,176 @@ if df_daily is not None and not df_daily.empty:
                         use_container_width=True,
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
+        # =============================================================================
+        # Resumo anual (HTML) — últimos 5 anos, mais recente -> mais antigo, * para ano incompleto
+        # =============================================================================
+        st.divider()
+        st.markdown("### Resumo anual")
+        include_year_forecast = st.toggle(
+            f"Incluir estimativa {int(last_date.year)}",
+            value=False,
+            key="include_year_forecast",
+        )
+        asof_last_year = _max_date_in_year(int(last_date.year))
+        year_end_ts = pd.Timestamp(year=int(last_date.year), month=12, day=31).normalize()
+        year_in_progress = asof_last_year.normalize() < year_end_ts
 
+        if include_year_forecast and year_in_progress:
+            st.markdown(
+                f"<div class='subtle'>*Estimando o ano de <b>{int(last_date.year)}</b></div>",
+                unsafe_allow_html=True,
+            )
+        # --- construir mapa com TODOS os anos (para comparar YoY mesmo se só mostramos 5) ---
+        years_all_sorted = sorted(years_all)
+        year_rows = []
+        ytd_note_date = None  # para mostrar no subtítulo
+
+        for y in years_all_sorted:
+            y_start = pd.Timestamp(year=y, month=1, day=1)
+            y_end = pd.Timestamp(year=y, month=12, day=31)
+
+            if y == int(last_date.year):
+                asof_real = _max_date_in_year(y)
+                is_ytd = asof_real.normalize() < y_end.normalize()
+
+                if is_ytd:
+                    ytd_note_date = asof_real.date()
+
+                # ✅ Toggle: se ano estiver incompleto e toggle ligado -> usa forecast anual
+                if is_ytd and st.session_state.include_year_forecast:
+                    k = _forecast_year_end(df_daily, y, asof_real)
+                    asof_y = asof_real
+                else:
+                    df_y = _period_slice(df_daily, y_start, asof_real)
+                    k = _period_kpis_from_daily(df_y)
+                    asof_y = asof_real
+            else:
+                asof_y = y_end
+                is_ytd = False
+                df_y = _period_slice(df_daily, y_start, asof_y)
+                k = _period_kpis_from_daily(df_y)
+
+            year_rows.append({
+                "ano": int(y),
+                "is_ytd": bool(is_ytd),   # continua True no ano incompleto (vai ficar com *)
+                "asof": asof_y.date(),
+                **k,
+            })
+
+        df_years_all = pd.DataFrame(year_rows)
+        year_map = {int(r["ano"]): r for _, r in df_years_all.iterrows()}
+
+        # --- últimos 5 anos, do mais recente para o mais antigo ---
+        years_display = sorted(years_all, reverse=True)[:5]
+        df_display = df_years_all[df_years_all["ano"].isin(years_display)].copy()
+        df_display = df_display.sort_values("ano", ascending=False).reset_index(drop=True)
+
+        # --- helpers de setas (reutiliza os mesmos do mensal) ---
+        def _arrow_pct(delta):
+            if delta is None or (isinstance(delta, float) and np.isnan(delta)):
+                return "", "flat"
+            if delta > 0.0005:
+                return f"▲ {delta*100:.0f}%", "up"
+            if delta < -0.0005:
+                return f"▼ {delta*100:.0f}%", "down"
+            return "→ 0%", "flat"
+
+        def _arrow_pp(delta_pp):
+            if delta_pp is None or (isinstance(delta_pp, float) and np.isnan(delta_pp)):
+                return "", "flat"
+            if delta_pp > 0.0005:
+                return f"▲ +{delta_pp*100:.1f} p.p.", "up"
+            if delta_pp < -0.0005:
+                return f"▼ {delta_pp*100:.1f} p.p.", "down"
+            return "→ 0.0 p.p.", "flat"
+
+        sub_note = ""
+        if ytd_note_date is not None:
+            sub_note = f" &nbsp; <span class='subtle'>* Dados até <b>{ytd_note_date}</b></span>"
+
+        head = f"""
+        <div class='panel'>
+        <div class='subtle'>Comparação anual {sub_note}</div>
+        <div class='tbl-wrap'>
+        <table class='tbl'>
+        <thead>
+        <tr>
+        <th>Ano</th>
+        <th>Clientes com acesso</th>
+        <th class='pctcell'>Clientes com operações</th>
+        <th>Nº de operações</th>
+        <th>Volume</th>
+        <th>Margem</th>
+        </tr>
+        </thead>
+        <tbody>
+        """
+
+        body = ""
+
+        for _, r in df_display.iterrows():
+            y = int(r["ano"])
+            prev = year_map.get(y - 1, None)
+
+            is_incomplete_year = bool(r.get("is_ytd", False))
+
+            ano_label = f"{y}*" if is_incomplete_year else str(y)
+
+            cli = r.get("clientes_end", np.nan)
+            ado = r.get("conv2_end", np.nan)
+            ops = r.get("ops", np.nan)
+            vol = r.get("vol", np.nan)
+            mar = r.get("mar", np.nan)
+
+            # Mostrar setas:
+            # - sempre em anos completos
+            # - no ano incompleto APENAS se a estimativa anual estiver ligada
+            allow_arrows = (not is_incomplete_year) or st.session_state.include_year_forecast
+
+            if prev is not None and allow_arrows:
+                d_cli = _pct_change(cli, prev.get("clientes_end", np.nan))
+                d_ops = _pct_change(ops, prev.get("ops", np.nan))
+                d_vol = _pct_change(vol, prev.get("vol", np.nan))
+                d_mar = _pct_change(mar, prev.get("mar", np.nan))
+                d_ado_pp = _pp_change(ado, prev.get("conv2_end", np.nan))
+            else:
+                d_cli = d_ops = d_vol = d_mar = d_ado_pp = np.nan
+
+            a_cli_txt, a_cli_cls = _arrow_pct(d_cli)
+            a_ops_txt, a_ops_cls = _arrow_pct(d_ops)
+            a_vol_txt, a_vol_cls = _arrow_pct(d_vol)
+            a_mar_txt, a_mar_cls = _arrow_pct(d_mar)
+            a_ado_txt, a_ado_cls = _arrow_pp(d_ado_pp)
+
+            # barra do % (se NaN -> 0)
+            p = 0.0
+            try:
+                if ado is not None and not (isinstance(ado, float) and np.isnan(ado)):
+                    v = float(ado)
+                    if v > 1.0:
+                        v = v / 100.0
+                    p = max(0.0, min(1.0, v))
+            except Exception:
+                p = 0.0
+            w = round(p * 100, 1)
+
+            body += f"""
+        <tr>
+        <td><b>{ano_label}</b></td>
+        <td>{_fmt_int(cli)}{(f"<span class='arrow {a_cli_cls}'>{a_cli_txt}</span>") if a_cli_txt else ""}</td>
+        <td class='pctcell'>
+        <span class='bar'><span class='fill' style='width:{w}%'></span></span>
+        <span class='pcttxt'>{_fmt_pct(ado, 1)}{(f"<span class='arrow {a_ado_cls}'>{a_ado_txt}</span>") if a_ado_txt else ""}</span>
+        </td>
+        <td>{_fmt_int_compact(ops, 1)}{(f"<span class='arrow {a_ops_cls}'>{a_ops_txt}</span>") if a_ops_txt else ""}</td>
+        <td>{_fmt_eur_compact(vol, 1)}{(f"<span class='arrow {a_vol_cls}'>{a_vol_txt}</span>") if a_vol_txt else ""}</td>
+        <td>{_fmt_eur_compact(mar, 1)}{(f"<span class='arrow {a_mar_cls}'>{a_mar_txt}</span>") if a_mar_txt else ""}</td>
+        </tr>
+        """
+
+        tail = "</tbody></table></div></div>"
+
+        st.html(head + body + tail)
         # ======================================================================
         # Detalhe diário
         # ======================================================================
