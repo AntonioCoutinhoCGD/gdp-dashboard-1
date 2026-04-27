@@ -1128,28 +1128,44 @@ if df_daily is not None and not df_daily.empty:
 
         def _on_year_change():
             y = int(st.session_state.sel_year)
+
             if st.session_state.pos_scope == "Mês":
                 ms = _months_in_year(y)
-                if int(st.session_state.sel_month) not in ms:
+                curr_month = st.session_state.get("sel_month")
+
+                if curr_month is None or int(curr_month) not in ms:
                     st.session_state.sel_month = ms[-1]
-                st.session_state.asof_date = _max_date_in_month(y, int(st.session_state.sel_month)).date()
+
+                st.session_state.asof_date = _max_date_in_month(
+                    y, int(st.session_state.sel_month)
+                ).date()
             else:
                 st.session_state.asof_date = _max_date_in_year(y).date()
 
         def _on_scope_change():
             y = int(st.session_state.sel_year)
+
             if st.session_state.pos_scope == "Ano":
                 st.session_state.asof_date = _max_date_in_year(y).date()
             else:
                 ms = _months_in_year(y)
-                if int(st.session_state.sel_month) not in ms:
+                curr_month = st.session_state.get("sel_month")
+
+                if curr_month is None or int(curr_month) not in ms:
                     st.session_state.sel_month = ms[-1]
-                st.session_state.asof_date = _max_date_in_month(y, int(st.session_state.sel_month)).date()
+
+                st.session_state.asof_date = _max_date_in_month(
+                    y, int(st.session_state.sel_month)
+                ).date()
 
         def _on_month_change():
             y = int(st.session_state.sel_year)
-            m = int(st.session_state.sel_month)
-            st.session_state.asof_date = _max_date_in_month(y, m).date()
+            m = st.session_state.get("sel_month")
+
+            if m is None:
+                return
+
+            st.session_state.asof_date = _max_date_in_month(y, int(m)).date()
 
         r1, r2, r3 = st.columns([1.15, 1.05, 2.35])
         with r1:
