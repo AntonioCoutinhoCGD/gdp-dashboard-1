@@ -55,13 +55,13 @@ _page_icon = LOGO_LOCAL if LOGO_LOCAL else "🏦"
 
 try:
     st.set_page_config(
-        page_title="Plataforma Cambial — Executive",
+        page_title="Plataforma Cambial — FNC",
         page_icon=_page_icon,
         layout="wide",
     )
 except Exception:
     st.set_page_config(
-        page_title="Plataforma Cambial — Executive",
+        page_title="Plataforma Cambial — FNC",
         page_icon="🏦",
         layout="wide",
     )
